@@ -1,6 +1,7 @@
 let units = 'kmh'; // default
 let altUnits = 'mph';
 let currentCountry = '';
+let autoDetectUnits = true; // Track if units were auto-detected or manually set
 let speed = 0;
 let interpolatedSpeed = 0; // Interpolated speed between GPS updates
 let lastPosition = null;
@@ -18,13 +19,14 @@ let timerTargets = {
     '100-200kmh': 200, '160-240kmh': 240
 };
 let dragTargets = ['1/8 mile', '1/4 mile', '1/2 mile', 'standing mile'];
-let vmax = 0;
 let sessionVmax = 0; // Persistent vmax across timer resets
 let lastCountryCheck = 0;
 let deviceId = localStorage.getItem('deviceId') || generateDeviceId();
 let lastLogTime = 0;
 let currentView = 'speedometer'; // 'speedometer' or 'summary'
 let interpolationInterval = null;
+let gpsLocked = false; // Track if we have sufficient GPS accuracy
+let minSatellites = 4; // Minimum satellites for reliable speed reading
 
 async function getCountryFromIP() {
     try {
@@ -53,6 +55,7 @@ async function getCountryFromCoords(lat, lon) {
 }
 
 function setUnits(country) {
+    if (!autoDetectUnits) return; // Don't override manual selection
     if (['US', 'GB', 'MM'].includes(country)) { // mph countries
         units = 'mph';
         altUnits = 'kmh';
@@ -60,6 +63,19 @@ function setUnits(country) {
         units = 'kmh';
         altUnits = 'mph';
     }
+}
+
+function toggleUnits() {
+    // Manual toggle - disable auto-detection
+    autoDetectUnits = false;
+    if (units === 'kmh') {
+        units = 'mph';
+        altUnits = 'kmh';
+    } else {
+        units = 'kmh';
+        altUnits = 'mph';
+    }
+    updateDisplay();
 }
 
 function toMph(kmh) { return kmh * 0.621371; }
@@ -78,6 +94,11 @@ function interpolateSpeed(v0, v1, timeSinceUpdate, totalInterval) {
     // If decelerating, model drag deceleration (quadratic relationship)
     // Drag force ∝ v², so deceleration rate increases with speed
     // Use exponential decay as approximation: v = v0 * e^(-kt)
+    // BUG FIX #1: Guard against division by zero when v1 is very small
+    if (v1 < 0.1) {
+        // Linear decay to zero for very low speeds
+        return Math.max(0, v0 * (1 - t));
+    }
     const k = -Math.log(v1 / v0) / totalInterval; // decay constant
     return v0 * Math.exp(-k * timeSinceUpdate);
 }
@@ -100,15 +121,35 @@ function startInterpolation() {
 }
 
 function updateDisplay() {
+    // Don't display speed until we have GPS lock
+    if (!gpsLocked) {
+        document.getElementById('speed').textContent = '--';
+        document.getElementById('speed-unit').textContent = 'Acquiring GPS...';
+        document.getElementById('alt-speed').textContent = 'Waiting for satellite lock';
+        const displayDistance = units === 'mph' ? (totalDistance * 0.621371) : totalDistance;
+        const distUnit = units === 'mph' ? 'mi' : 'km';
+        const displayVmax = units === 'mph' ? toMph(sessionVmax) : sessionVmax;
+        document.getElementById('distance').textContent = displayDistance.toFixed(2) + ' ' + distUnit;
+        document.getElementById('session-vmax').textContent = displayVmax.toFixed(1) + ' ' + units;
+        return;
+    }
+
     const displaySpeedValue = interpolatedSpeed || speed;
     const displaySpeed = units === 'mph' ? toMph(displaySpeedValue) : displaySpeedValue;
     const altDisplay = altUnits === 'mph' ? toMph(displaySpeedValue) : displaySpeedValue;
 
+    // Convert distance based on current units
+    const displayDistance = units === 'mph' ? (totalDistance * 0.621371) : totalDistance;
+    const distUnit = units === 'mph' ? 'mi' : 'km';
+
+    // Convert session vMax based on current units
+    const displayVmax = units === 'mph' ? toMph(sessionVmax) : sessionVmax;
+
     document.getElementById('speed').textContent = displaySpeed.toFixed(1);
     document.getElementById('speed-unit').textContent = units;
     document.getElementById('alt-speed').textContent = altDisplay.toFixed(1) + ' ' + altUnits;
-    document.getElementById('distance').textContent = totalDistance.toFixed(2) + ' km';
-    document.getElementById('session-vmax').textContent = sessionVmax.toFixed(1) + ' km/h';
+    document.getElementById('distance').textContent = displayDistance.toFixed(2) + ' ' + distUnit;
+    document.getElementById('session-vmax').textContent = displayVmax.toFixed(1) + ' ' + units;
 }
 
 function haversine(lat1, lon1, lat2, lon2) {
@@ -126,21 +167,53 @@ function watchPosition(position) {
     const now = Date.now();
     const lat = position.coords.latitude;
     const lon = position.coords.longitude;
+
+    // Check GPS accuracy - require minimum satellite count
+    // Note: accuracy is in meters, lower is better. Most devices don't expose satellite count,
+    // so we use accuracy as a proxy. Good accuracy (< 20m) typically means 4+ satellites.
+    const accuracy = position.coords.accuracy;
+    const hasGoodAccuracy = accuracy !== undefined && accuracy < 20; // < 20 meters is good
+
+    // Alternative check: use satellites if available (non-standard, Android/some browsers)
+    const satellites = position.coords.satellites || 0;
+    const hasSufficientSatellites = satellites >= minSatellites;
+
+    // GPS is locked if we have good accuracy OR sufficient satellites
+    gpsLocked = hasGoodAccuracy || hasSufficientSatellites;
+
+    if (!gpsLocked) {
+        updateDisplay();
+        return; // Don't process position until we have lock
+    }
+
     getCountryFromCoords(lat, lon);
 
     if (lastPosition) {
         const dist = haversine(lastPosition.lat, lastPosition.lon, lat, lon);
         const timeDiff = (now - lastTime) / 1000; // seconds
 
+        // BUG FIX #6: Validate distance and time to avoid spurious speeds
+        // Ignore readings with very small distances (GPS jitter) or time intervals
+        if (dist < 0.001 || timeDiff < 0.5) {
+            lastPosition = { lat, lon };
+            lastTime = now;
+            updateDisplay();
+            return;
+        }
+
         lastSpeed = speed; // Store for interpolation
-        speed = (dist / timeDiff) * 3600; // kmh
-        interpolatedSpeed = speed; // Reset interpolated to actual
+        const calculatedSpeed = (dist / timeDiff) * 3600; // kmh
 
-        totalDistance += dist; // Accumulate distance
-        vmax = Math.max(vmax, speed);
-        sessionVmax = Math.max(sessionVmax, speed);
+        // Sanity check: ignore physically impossible speeds (> 500 km/h for ground vehicles)
+        if (calculatedSpeed <= 500) {
+            speed = calculatedSpeed;
+            interpolatedSpeed = speed; // Reset interpolated to actual
 
-        updateTimers(speed, timeDiff, totalDistance);
+            totalDistance += dist; // Accumulate distance
+            sessionVmax = Math.max(sessionVmax, speed);
+
+            updateTimers(speed, timeDiff, totalDistance);
+        }
     }
 
     lastPosition = { lat, lon };
@@ -157,6 +230,8 @@ function updateTimers(currentSpeed, timeDiff, totalDist) {
             // Session ended, timers will be reset but vmax persists
             timers = {};
             timerStart = null;
+            // BUG FIX #4: Reset totalDistance when timers reset
+            totalDistance = 0;
         }
         return;
     }
@@ -189,15 +264,24 @@ function resetSession() {
         return;
     }
 
-    // Save session before resetting (optional)
-    if (sessionStart && sessionVmax > 0) {
-        saveSession();
+    // BUG FIX #3: Only save session if meaningful data was collected
+    // BUG FIX #5: Pass session data to avoid race condition
+    if (sessionStart && sessionVmax > 5 && totalDistance > 0.1) {
+        const sessionData = {
+            deviceId,
+            startTime: sessionStart,
+            endTime: new Date().toISOString(),
+            vMax: sessionVmax,
+            distance: totalDistance,
+            duration: Math.floor((Date.now() - new Date(sessionStart)) / 1000),
+            timers: { ...timers }
+        };
+        saveSession(sessionData);
     }
 
     timers = {};
     timerStart = null;
     sessionStart = null;
-    vmax = 0;
     sessionVmax = 0;
     totalDistance = 0;
     displayTimers();
@@ -231,7 +315,13 @@ function generateDeviceId() {
         const v = c == 'x' ? r : (r & 0x3 | 0x8);
         return v.toString(16);
     });
-    localStorage.setItem('deviceId', id);
+    // BUG FIX #8: Handle localStorage quota exhaustion
+    try {
+        localStorage.setItem('deviceId', id);
+    } catch (e) {
+        console.error('Failed to save device ID to localStorage:', e);
+        // Continue without persisting - will generate new ID on next load
+    }
     return id;
 }
 
@@ -245,22 +335,12 @@ function logSpeed() {
     }).catch(err => console.log('Logging failed', err));
 }
 
-function saveSession() {
-    const endTime = new Date().toISOString();
-    const duration = sessionStart ? Math.floor((new Date(endTime) - new Date(sessionStart)) / 1000) : 0;
-
+function saveSession(sessionData) {
+    // BUG FIX #5: Accept session data as parameter to avoid race conditions
     fetch('/api/save-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            deviceId,
-            startTime: sessionStart,
-            endTime,
-            vMax: sessionVmax,
-            distance: totalDistance,
-            duration,
-            timers
-        })
+        body: JSON.stringify(sessionData)
     }).catch(err => console.log('Session save failed', err));
 }
 
@@ -330,16 +410,22 @@ function loadSummary() {
         .then(data => {
             const historyEl = document.getElementById('session-history');
             if (data.sessions && data.sessions.length > 0) {
-                historyEl.innerHTML = data.sessions.map(session => `
-                    <div class="history-item">
-                        <div class="history-date">${new Date(session.timestamp).toLocaleString()}</div>
-                        <div class="history-stats">
-                            <span>vMax: ${session.vMax?.toFixed(1) || 0} km/h</span>
-                            <span>Distance: ${session.distance?.toFixed(2) || 0} km</span>
-                            <span>Duration: ${formatDuration(session.duration || 0)}</span>
+                historyEl.innerHTML = data.sessions.map(session => {
+                    // BUG FIX #12: Proper NULL handling for session values
+                    const vMax = (session.vMax || 0).toFixed(1);
+                    const distance = (session.distance || 0).toFixed(2);
+                    const duration = formatDuration(session.duration || 0);
+                    return `
+                        <div class="history-item">
+                            <div class="history-date">${new Date(session.timestamp).toLocaleString()}</div>
+                            <div class="history-stats">
+                                <span>vMax: ${vMax} km/h</span>
+                                <span>Distance: ${distance} km</span>
+                                <span>Duration: ${duration}</span>
+                            </div>
                         </div>
-                    </div>
-                `).join('');
+                    `;
+                }).join('');
             } else {
                 historyEl.innerHTML = '<p class="no-data">No previous sessions</p>';
             }
@@ -366,6 +452,9 @@ async function init() {
     document.getElementById('btn-reset').addEventListener('click', resetSession);
     document.getElementById('btn-speedometer').addEventListener('click', () => toggleView('speedometer'));
     document.getElementById('btn-summary').addEventListener('click', () => toggleView('summary'));
+
+    // Add tap-to-toggle units feature on speed circle
+    document.querySelector('.speed-circle').addEventListener('click', toggleUnits);
 
     if (navigator.geolocation) {
         navigator.geolocation.watchPosition(watchPosition, (err) => console.log(err), { enableHighAccuracy: true, maximumAge: 1000 });
