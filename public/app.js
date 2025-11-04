@@ -726,48 +726,69 @@ function generateGTRTestData() {
 
     let successCount = 0;
     let errorCount = 0;
+    const totalSessions = testSessions.length;
 
-    testSessions.forEach((session, index) => {
-        // Spread sessions over last 30 days
-        const daysAgo = Math.floor((30 / testSessions.length) * index);
-        const timestamp = new Date(now - (daysAgo * dayMs) - Math.random() * dayMs);
-        const startTime = new Date(timestamp.getTime() - session.duration * 1000);
+    console.log(`Starting generation of ${totalSessions} test sessions...`);
 
-        const sessionData = {
-            deviceId: deviceId,
-            startTime: startTime.toISOString(),
-            endTime: timestamp.toISOString(),
-            vMax: session.vMax,
-            distance: session.distance,
-            duration: session.duration,
-            timers: session.timers,
-            onIncline: session.onIncline
-        };
+    // Process sessions sequentially with delay to avoid rate limiting
+    async function processSessions() {
+        for (let index = 0; index < testSessions.length; index++) {
+            const session = testSessions[index];
 
-        // Send to server
-        fetch('/api/save-session', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(sessionData)
-        })
-        .then(res => res.json())
-        .then(data => {
-            if (data.success) successCount++;
-            else errorCount++;
+            // Spread sessions over last 30 days
+            const daysAgo = Math.floor((30 / testSessions.length) * index);
+            const timestamp = new Date(now - (daysAgo * dayMs) - Math.random() * dayMs);
+            const startTime = new Date(timestamp.getTime() - session.duration * 1000);
 
-            // Check if all done
-            if (successCount + errorCount === testSessions.length) {
-                alert(`✅ Generated ${successCount} GT-R test sessions!\n\nGo to Summary tab to view and export.`);
-                if (currentView === 'summary') {
-                    loadSummary(); // Refresh if already on summary
+            const sessionData = {
+                deviceId: deviceId,
+                startTime: startTime.toISOString(),
+                endTime: timestamp.toISOString(),
+                vMax: session.vMax,
+                distance: session.distance,
+                duration: session.duration,
+                timers: session.timers,
+                onIncline: session.onIncline
+            };
+
+            console.log(`Sending session ${index + 1}/${totalSessions}...`, sessionData);
+
+            try {
+                // Send to server
+                const response = await fetch('/api/save-session', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(sessionData)
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    successCount++;
+                    console.log(`✓ Session ${index + 1}/${totalSessions} created (ID: ${data.id})`);
+                } else {
+                    errorCount++;
+                    console.error(`✗ Session ${index + 1}/${totalSessions} failed:`, data);
                 }
+            } catch (err) {
+                errorCount++;
+                console.error(`✗ Session ${index + 1}/${totalSessions} error:`, err);
             }
-        })
-        .catch(err => {
-            console.error('Failed to save test session:', err);
-            errorCount++;
-        });
-    });
+
+            // Small delay to avoid overwhelming rate limiter
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        // All done
+        console.log(`\n✅ Complete: ${successCount} sessions created, ${errorCount} failed`);
+        alert(`✅ Generated ${successCount} GT-R test sessions!\n${errorCount > 0 ? `Failed: ${errorCount}\n` : ''}\nGo to Summary tab to view and export.`);
+
+        if (currentView === 'summary') {
+            loadSummary(); // Refresh if already on summary
+        }
+    }
+
+    processSessions();
 }
 
 function exportCSV() {

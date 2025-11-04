@@ -139,23 +139,55 @@ app.post('/api/log-speed', rateLimit, (req, res) => {
 // Save session summary
 app.post('/api/save-session', rateLimit, (req, res) => {
   const { deviceId, startTime, endTime, vMax, distance, duration, timers, onIncline } = req.body;
+
+  // Validate required fields
   if (!deviceId || !startTime || !endTime) {
-    return res.status(400).json({ error: 'Invalid session data' });
+    console.error('Missing required fields:', { deviceId: !!deviceId, startTime: !!startTime, endTime: !!endTime });
+    return res.status(400).json({ error: 'Invalid session data: missing required fields' });
   }
-  const timersJSON = JSON.stringify(timers);
+
+  // Safely stringify timers
+  let timersJSON;
+  try {
+    timersJSON = JSON.stringify(timers || {});
+  } catch (err) {
+    console.error('Failed to stringify timers:', err);
+    return res.status(400).json({ error: 'Invalid timers format' });
+  }
+
   const inclineFlag = onIncline ? 1 : 0;
 
-  db.run(
-    'INSERT INTO sessions (deviceId, startTime, endTime, vMax, distance, duration, timers, onIncline, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [deviceId, startTime, endTime, vMax, distance, duration, timersJSON, inclineFlag, new Date().toISOString()],
-    function(err) {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Database error' });
-      }
-      res.json({ success: true, id: this.lastID });
+  // Check if onIncline column exists, use fallback if not
+  db.all("PRAGMA table_info(sessions)", (err, columns) => {
+    if (err) {
+      console.error('Error checking table schema:', err);
+      return res.status(500).json({ error: 'Database error' });
     }
-  );
+
+    const hasOnIncline = columns.some(col => col.name === 'onIncline');
+
+    let query, params;
+    if (hasOnIncline) {
+      query = 'INSERT INTO sessions (deviceId, startTime, endTime, vMax, distance, duration, timers, onIncline, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
+      params = [deviceId, startTime, endTime, vMax, distance, duration, timersJSON, inclineFlag, new Date().toISOString()];
+    } else {
+      // Fallback for older schema without onIncline
+      query = 'INSERT INTO sessions (deviceId, startTime, endTime, vMax, distance, duration, timers, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
+      params = [deviceId, startTime, endTime, vMax, distance, duration, timersJSON, new Date().toISOString()];
+      console.warn('onIncline column not found, using legacy schema');
+    }
+
+    db.run(query, params, function(err) {
+      if (err) {
+        console.error('Database insert error:', err);
+        console.error('Query:', query);
+        console.error('Params:', params);
+        return res.status(500).json({ error: 'Database error', details: err.message });
+      }
+      console.log(`Session saved: ID ${this.lastID}, deviceId ${deviceId}, vMax ${vMax}`);
+      res.json({ success: true, id: this.lastID });
+    });
+  });
 });
 
 // Get session history for a device
