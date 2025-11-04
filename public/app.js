@@ -27,6 +27,14 @@ let currentView = 'speedometer'; // 'speedometer' or 'summary'
 let interpolationInterval = null;
 let gpsLocked = false; // Track if we have sufficient GPS accuracy
 let minSatellites = 4; // Minimum satellites for reliable speed reading
+let lastAltitude = null; // Previous altitude reading
+let altitudeHistory = []; // Rolling window for altitude smoothing
+let currentIncline = 0; // Current incline in degrees
+let onDownhill = false; // Flag if currently on downhill >= 2 degrees
+let inclineThreshold = 2; // Degrees - threshold for invalidating data
+let summaryUnits = localStorage.getItem('summaryUnits') ?
+    JSON.parse(localStorage.getItem('summaryUnits')) :
+    { speed: 'kmh', distance: 'km' }; // Summary view unit preferences
 
 async function getCountryFromIP() {
     try {
@@ -163,10 +171,35 @@ function haversine(lat1, lon1, lat2, lon2) {
     return R * c;
 }
 
+function calculateIncline(altitudeChange, horizontalDistance) {
+    // Calculate incline angle in degrees
+    // altitudeChange: meters, horizontalDistance: km
+    if (horizontalDistance < 0.01) return 0; // Ignore very small distances
+
+    const distanceMeters = horizontalDistance * 1000;
+    const inclineRadians = Math.atan(altitudeChange / distanceMeters);
+    const inclineDegrees = inclineRadians * (180 / Math.PI);
+
+    return inclineDegrees;
+}
+
+function smoothAltitude(newAltitude) {
+    // Use 5-reading moving average to reduce GPS noise
+    altitudeHistory.push(newAltitude);
+    if (altitudeHistory.length > 5) {
+        altitudeHistory.shift();
+    }
+
+    const sum = altitudeHistory.reduce((a, b) => a + b, 0);
+    return sum / altitudeHistory.length;
+}
+
 function watchPosition(position) {
     const now = Date.now();
     const lat = position.coords.latitude;
     const lon = position.coords.longitude;
+    const altitude = position.coords.altitude; // meters above sea level (may be null)
+    const altitudeAccuracy = position.coords.altitudeAccuracy;
 
     // Check GPS accuracy - require minimum satellite count
     // Note: accuracy is in meters, lower is better. Most devices don't expose satellite count,
@@ -187,6 +220,24 @@ function watchPosition(position) {
     }
 
     getCountryFromCoords(lat, lon);
+
+    // Process altitude if available and accurate enough
+    if (altitude !== null && altitudeAccuracy !== null && altitudeAccuracy < 50) {
+        const smoothedAltitude = smoothAltitude(altitude);
+
+        if (lastAltitude !== null && lastPosition) {
+            const altitudeChange = smoothedAltitude - lastAltitude; // meters
+            const dist = haversine(lastPosition.lat, lastPosition.lon, lat, lon); // km
+
+            if (dist >= 0.01) { // Only calculate for meaningful distances
+                currentIncline = calculateIncline(altitudeChange, dist);
+                // Check if on downhill (negative incline >= threshold)
+                onDownhill = currentIncline <= -inclineThreshold;
+            }
+        }
+
+        lastAltitude = smoothedAltitude;
+    }
 
     if (lastPosition) {
         const dist = haversine(lastPosition.lat, lastPosition.lon, lat, lon);
@@ -246,7 +297,10 @@ function updateTimers(currentSpeed, timeDiff, totalDist) {
     // speed timers
     Object.keys(timerTargets).forEach(key => {
         if (!timers[key] && currentSpeed >= timerTargets[key]) {
-            timers[key] = elapsed.toFixed(2) + 's';
+            timers[key] = {
+                time: elapsed.toFixed(2) + 's',
+                invalid: onDownhill
+            };
         }
     });
 
@@ -254,7 +308,10 @@ function updateTimers(currentSpeed, timeDiff, totalDist) {
     dragTargets.forEach(target => {
         const distKm = distances[target.split(' ')[0]];
         if (!timers[target] && totalDist >= distKm) {
-            timers[target] = elapsed.toFixed(2) + 's @ ' + currentSpeed.toFixed(1) + ' km/h';
+            timers[target] = {
+                time: elapsed.toFixed(2) + 's @ ' + currentSpeed.toFixed(1) + ' km/h',
+                invalid: onDownhill
+            };
         }
     });
 }
@@ -267,6 +324,11 @@ function resetSession() {
     // BUG FIX #3: Only save session if meaningful data was collected
     // BUG FIX #5: Pass session data to avoid race condition
     if (sessionStart && sessionVmax > 5 && totalDistance > 0.1) {
+        // Check if any timers were achieved on downhill
+        const hasInvalidTimers = Object.values(timers).some(t =>
+            typeof t === 'object' && t.invalid
+        );
+
         const sessionData = {
             deviceId,
             startTime: sessionStart,
@@ -274,7 +336,8 @@ function resetSession() {
             vMax: sessionVmax,
             distance: totalDistance,
             duration: Math.floor((Date.now() - new Date(sessionStart)) / 1000),
-            timers: { ...timers }
+            timers: { ...timers },
+            onIncline: hasInvalidTimers || onDownhill
         };
         saveSession(sessionData);
     }
@@ -296,9 +359,13 @@ function displayTimers() {
     });
 
     sortedTimers.forEach(([key, value]) => {
-        html += `<div class="timer-item">
-            <span class="timer-label">${key}</span>
-            <span class="timer-value">${value}</span>
+        const invalidClass = value.invalid ? 'timer-invalid' : '';
+        const invalidIndicator = value.invalid ? ' ⚠️' : '';
+        const displayValue = typeof value === 'object' ? value.time : value;
+
+        html += `<div class="timer-item ${invalidClass}">
+            <span class="timer-label">${key}${invalidIndicator}</span>
+            <span class="timer-value">${displayValue}</span>
         </div>`;
     });
 
@@ -361,18 +428,35 @@ function toggleView(view) {
     }
 }
 
+function toggleSummaryUnits(type) {
+    if (type === 'speed') {
+        summaryUnits.speed = summaryUnits.speed === 'kmh' ? 'mph' : 'kmh';
+    } else if (type === 'distance') {
+        summaryUnits.distance = summaryUnits.distance === 'km' ? 'mi' : 'km';
+    }
+    localStorage.setItem('summaryUnits', JSON.stringify(summaryUnits));
+    loadSummary(); // Reload to reflect changes
+}
+
 function loadSummary() {
+    const vMaxValue = summaryUnits.speed === 'mph' ? toMph(sessionVmax) : sessionVmax;
+    const distValue = summaryUnits.distance === 'mi' ? (totalDistance * 0.621371) : totalDistance;
+
     const summaryContent = `
         <div class="summary-section">
             <h3>Current Session</h3>
             <div class="summary-grid">
                 <div class="summary-stat">
                     <span class="stat-label">vMax</span>
-                    <span class="stat-value">${sessionVmax.toFixed(1)} km/h</span>
+                    <span class="stat-value stat-clickable" onclick="toggleSummaryUnits('speed')" title="Click to toggle units">
+                        ${vMaxValue.toFixed(1)} ${summaryUnits.speed}
+                    </span>
                 </div>
                 <div class="summary-stat">
                     <span class="stat-label">Distance</span>
-                    <span class="stat-value">${totalDistance.toFixed(2)} km</span>
+                    <span class="stat-value stat-clickable" onclick="toggleSummaryUnits('distance')" title="Click to toggle units">
+                        ${distValue.toFixed(2)} ${summaryUnits.distance}
+                    </span>
                 </div>
                 <div class="summary-stat">
                     <span class="stat-label">Duration</span>
@@ -400,6 +484,21 @@ function loadSummary() {
             <h3>Session History</h3>
             <div id="session-history">Loading...</div>
         </div>
+
+        <div class="summary-section">
+            <h3>Export Data</h3>
+            <div class="export-buttons">
+                <button class="btn" onclick="exportCSV()">📊 Export to Excel/CSV</button>
+            </div>
+        </div>
+
+        <div class="summary-section">
+            <h3>Test Data</h3>
+            <p style="opacity: 0.7; font-size: 0.9em; margin-bottom: 15px;">Generate sample performance data for demonstration purposes</p>
+            <div class="export-buttons">
+                <button class="btn" onclick="generateGTRTestData()">🏎️ Generate R35 GT-R Data (750bhp)</button>
+            </div>
+        </div>
     `;
 
     document.getElementById('summary-content').innerHTML = summaryContent;
@@ -412,16 +511,25 @@ function loadSummary() {
             if (data.sessions && data.sessions.length > 0) {
                 historyEl.innerHTML = data.sessions.map(session => {
                     // BUG FIX #12: Proper NULL handling for session values
-                    const vMax = (session.vMax || 0).toFixed(1);
-                    const distance = (session.distance || 0).toFixed(2);
+                    const vMax = (session.vMax || 0);
+                    const distance = (session.distance || 0);
                     const duration = formatDuration(session.duration || 0);
+
+                    // Convert based on summary units preference
+                    const vMaxDisplay = summaryUnits.speed === 'mph' ? toMph(vMax).toFixed(1) : vMax.toFixed(1);
+                    const distDisplay = summaryUnits.distance === 'mi' ? (distance * 0.621371).toFixed(2) : distance.toFixed(2);
+
+                    const inclineIndicator = session.onIncline ? ' <span class="incline-warning" title="Achieved on downhill">⚠️ Downhill</span>' : '';
+                    const inclineClass = session.onIncline ? 'session-invalid' : '';
+
                     return `
-                        <div class="history-item">
+                        <div class="history-item ${inclineClass}">
                             <div class="history-date">${new Date(session.timestamp).toLocaleString()}</div>
                             <div class="history-stats">
-                                <span>vMax: ${vMax} km/h</span>
-                                <span>Distance: ${distance} km</span>
+                                <span>vMax: ${vMaxDisplay} ${summaryUnits.speed}</span>
+                                <span>Distance: ${distDisplay} ${summaryUnits.distance}</span>
                                 <span>Duration: ${duration}</span>
+                                ${inclineIndicator}
                             </div>
                         </div>
                     `;
@@ -443,6 +551,308 @@ function formatDuration(seconds) {
     if (hrs > 0) return `${hrs}h ${mins}m ${secs}s`;
     if (mins > 0) return `${mins}m ${secs}s`;
     return `${secs}s`;
+}
+
+function generateGTRTestData() {
+    // Generate realistic test data for 750bhp R35 GT-R
+    const confirmation = confirm('Generate test data for a 750bhp R35 GT-R?\n\nThis will create 10 sample sessions in your database with realistic performance times.');
+    if (!confirmation) return;
+
+    const testSessions = [
+        {
+            // Run 1: Perfect launch, dry conditions
+            vMax: 318.4, // 198 mph
+            distance: 1.609344, // 1 mile
+            duration: 52,
+            timers: {
+                '0-60': { time: '2.41s', invalid: false },
+                '0-100': { time: '5.23s', invalid: false },
+                '0-150': { time: '10.68s', invalid: false },
+                '0-100kmh': { time: '2.52s', invalid: false },
+                '0-160kmh': { time: '5.45s', invalid: false },
+                '1/4 mile': { time: '9.87s @ 238.2 km/h', invalid: false },
+                '1/2 mile': { time: '16.34s @ 301.5 km/h', invalid: false },
+                'standing mile': { time: '24.89s @ 318.4 km/h', invalid: false }
+            },
+            onIncline: false
+        },
+        {
+            // Run 2: Good launch, slight wheel spin
+            vMax: 315.7,
+            distance: 1.609344,
+            duration: 53,
+            timers: {
+                '0-60': { time: '2.53s', invalid: false },
+                '0-100': { time: '5.41s', invalid: false },
+                '0-150': { time: '10.94s', invalid: false },
+                '0-100kmh': { time: '2.64s', invalid: false },
+                '0-160kmh': { time: '5.63s', invalid: false },
+                '1/4 mile': { time: '10.02s @ 235.8 km/h', invalid: false },
+                '1/2 mile': { time: '16.58s @ 298.7 km/h', invalid: false },
+                'standing mile': { time: '25.12s @ 315.7 km/h', invalid: false }
+            },
+            onIncline: false
+        },
+        {
+            // Run 3: Street run, rolling start from 30
+            vMax: 289.3,
+            distance: 0.804672, // 0.5 mile
+            duration: 28,
+            timers: {
+                '30-60': { time: '1.82s', invalid: false },
+                '60-120': { time: '4.67s', invalid: false },
+                '60-130': { time: '5.91s', invalid: false },
+                '100-150': { time: '4.23s', invalid: false },
+                '100-200kmh': { time: '5.87s', invalid: false },
+                '1/2 mile': { time: '16.89s @ 289.3 km/h', invalid: false }
+            },
+            onIncline: false
+        },
+        {
+            // Run 4: Drag strip, perfect conditions
+            vMax: 241.4, // Just after 1/4 mile
+            distance: 0.402336, // 1/4 mile
+            duration: 10,
+            timers: {
+                '0-60': { time: '2.38s', invalid: false },
+                '0-100': { time: '5.19s', invalid: false },
+                '0-100kmh': { time: '2.49s', invalid: false },
+                '0-160kmh': { time: '5.38s', invalid: false },
+                '1/4 mile': { time: '9.78s @ 241.4 km/h', invalid: false }
+            },
+            onIncline: false
+        },
+        {
+            // Run 5: Autobahn blast
+            vMax: 327.8, // 204 mph - extended run
+            distance: 3.218688, // 2 miles
+            duration: 98,
+            timers: {
+                '0-60': { time: '2.45s', invalid: false },
+                '0-100': { time: '5.28s', invalid: false },
+                '0-150': { time: '10.76s', invalid: false },
+                '0-200': { time: '18.92s', invalid: false },
+                '0-100kmh': { time: '2.56s', invalid: false },
+                '0-160kmh': { time: '5.49s', invalid: false },
+                '0-250kmh': { time: '14.23s', invalid: false },
+                '1/4 mile': { time: '9.92s @ 239.5 km/h', invalid: false },
+                '1/2 mile': { time: '16.45s @ 303.2 km/h', invalid: false },
+                'standing mile': { time: '24.76s @ 320.1 km/h', invalid: false }
+            },
+            onIncline: false
+        },
+        {
+            // Run 6: Track day, multiple runs
+            vMax: 267.3,
+            distance: 2.414016, // 1.5 miles
+            duration: 72,
+            timers: {
+                '0-60': { time: '2.58s', invalid: false },
+                '0-100': { time: '5.47s', invalid: false },
+                '0-150': { time: '11.12s', invalid: false },
+                '0-100kmh': { time: '2.69s', invalid: false },
+                '0-160kmh': { time: '5.68s', invalid: false },
+                '160-240kmh': { time: '8.94s', invalid: false },
+                '1/4 mile': { time: '10.15s @ 232.6 km/h', invalid: false },
+                '1/2 mile': { time: '16.82s @ 267.3 km/h', invalid: false }
+            },
+            onIncline: false
+        },
+        {
+            // Run 7: Wet conditions - slower times
+            vMax: 254.8,
+            distance: 0.804672, // 0.5 mile
+            duration: 32,
+            timers: {
+                '0-60': { time: '3.12s', invalid: false },
+                '0-100': { time: '6.38s', invalid: false },
+                '0-150': { time: '13.45s', invalid: false },
+                '0-100kmh': { time: '3.26s', invalid: false },
+                '0-160kmh': { time: '6.62s', invalid: false },
+                '1/4 mile': { time: '11.23s @ 218.7 km/h', invalid: false },
+                '1/2 mile': { time: '18.94s @ 254.8 km/h', invalid: false }
+            },
+            onIncline: false
+        },
+        {
+            // Run 8: Highway roll from 60 mph
+            vMax: 305.2,
+            distance: 1.207008, // 0.75 mile
+            duration: 41,
+            timers: {
+                '60-120': { time: '4.59s', invalid: false },
+                '60-130': { time: '5.78s', invalid: false },
+                '100-150': { time: '4.15s', invalid: false },
+                '100-200kmh': { time: '5.73s', invalid: false },
+                '160-240kmh': { time: '8.67s', invalid: false }
+            },
+            onIncline: false
+        },
+        {
+            // Run 9: Downhill run (INVALID)
+            vMax: 332.6,
+            distance: 1.609344, // 1 mile
+            duration: 46,
+            timers: {
+                '0-60': { time: '2.18s', invalid: true },
+                '0-100': { time: '4.87s', invalid: true },
+                '0-150': { time: '9.92s', invalid: true },
+                '0-100kmh': { time: '2.28s', invalid: true },
+                '0-160kmh': { time: '5.06s', invalid: true },
+                '1/4 mile': { time: '9.34s @ 246.8 km/h', invalid: true },
+                '1/2 mile': { time: '15.67s @ 312.4 km/h', invalid: true },
+                'standing mile': { time: '23.89s @ 332.6 km/h', invalid: true }
+            },
+            onIncline: true
+        },
+        {
+            // Run 10: 1/8 mile test
+            vMax: 189.7,
+            distance: 0.201168, // 1/8 mile
+            duration: 6,
+            timers: {
+                '0-60': { time: '2.44s', invalid: false },
+                '0-100': { time: '5.31s', invalid: false },
+                '0-100kmh': { time: '2.55s', invalid: false },
+                '1/8 mile': { time: '6.12s @ 189.7 km/h', invalid: false }
+            },
+            onIncline: false
+        }
+    ];
+
+    // Generate timestamps spread over the last 30 days
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+
+    let successCount = 0;
+    let errorCount = 0;
+
+    testSessions.forEach((session, index) => {
+        // Spread sessions over last 30 days
+        const daysAgo = Math.floor((30 / testSessions.length) * index);
+        const timestamp = new Date(now - (daysAgo * dayMs) - Math.random() * dayMs);
+        const startTime = new Date(timestamp.getTime() - session.duration * 1000);
+
+        const sessionData = {
+            deviceId: deviceId,
+            startTime: startTime.toISOString(),
+            endTime: timestamp.toISOString(),
+            vMax: session.vMax,
+            distance: session.distance,
+            duration: session.duration,
+            timers: session.timers,
+            onIncline: session.onIncline
+        };
+
+        // Send to server
+        fetch('/api/save-session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(sessionData)
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) successCount++;
+            else errorCount++;
+
+            // Check if all done
+            if (successCount + errorCount === testSessions.length) {
+                alert(`✅ Generated ${successCount} GT-R test sessions!\n\nGo to Summary tab to view and export.`);
+                if (currentView === 'summary') {
+                    loadSummary(); // Refresh if already on summary
+                }
+            }
+        })
+        .catch(err => {
+            console.error('Failed to save test session:', err);
+            errorCount++;
+        });
+    });
+}
+
+function exportCSV() {
+    // Fetch all sessions and export to CSV
+    fetch(`/api/sessions/${deviceId}`)
+        .then(res => res.json())
+        .then(data => {
+            if (!data.sessions || data.sessions.length === 0) {
+                alert('No session data to export');
+                return;
+            }
+
+            // CSV Headers
+            const headers = [
+                'Date',
+                'Time',
+                'vMax (km/h)',
+                'vMax (mph)',
+                'Distance (km)',
+                'Distance (mi)',
+                'Duration',
+                'On Incline',
+                'Timers'
+            ];
+
+            // Convert sessions to CSV rows
+            const rows = data.sessions.map(session => {
+                const date = new Date(session.timestamp);
+                const vMaxKmh = (session.vMax || 0).toFixed(1);
+                const vMaxMph = toMph(session.vMax || 0).toFixed(1);
+                const distKm = (session.distance || 0).toFixed(2);
+                const distMi = ((session.distance || 0) * 0.621371).toFixed(2);
+                const duration = formatDuration(session.duration || 0);
+                const onIncline = session.onIncline ? 'Yes*' : 'No';
+
+                // Format timers
+                let timersText = '';
+                if (session.timers && typeof session.timers === 'object') {
+                    timersText = Object.entries(session.timers)
+                        .map(([key, val]) => {
+                            const time = typeof val === 'object' ? val.time : val;
+                            const invalid = typeof val === 'object' && val.invalid ? '*' : '';
+                            return `${key}: ${time}${invalid}`;
+                        })
+                        .join('; ');
+                }
+
+                return [
+                    date.toLocaleDateString(),
+                    date.toLocaleTimeString(),
+                    vMaxKmh,
+                    vMaxMph,
+                    distKm,
+                    distMi,
+                    duration,
+                    onIncline,
+                    `"${timersText}"` // Quote to handle commas in timers
+                ];
+            });
+
+            // Build CSV content
+            const csvContent = [headers, ...rows]
+                .map(row => row.join(','))
+                .join('\n');
+
+            // Add footer note
+            const footer = '\n\n"Note: * indicates data collected on downhill (>=2° decline)"';
+            const fullCsv = csvContent + footer;
+
+            // Create and download file
+            const blob = new Blob([fullCsv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `speedopage-sessions-${Date.now()}.csv`;
+            link.style.display = 'none';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        })
+        .catch(err => {
+            console.error('Export failed:', err);
+            alert('Failed to export data. Please try again.');
+        });
 }
 
 async function init() {

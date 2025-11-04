@@ -231,6 +231,19 @@
             color: #00ff88;
         }
 
+        .timer-invalid {
+            font-style: italic;
+            opacity: 0.7;
+        }
+
+        .timer-invalid .timer-value {
+            color: #ff3b30;
+        }
+
+        .timer-invalid .timer-label {
+            color: #ff9500;
+        }
+
         .timer-placeholder {
             grid-column: 1 / -1;
             text-align: center;
@@ -317,6 +330,34 @@
 
         .history-stats span {
             font-size: 0.95em;
+        }
+
+        .stat-clickable {
+            cursor: pointer;
+            text-decoration: underline;
+            text-decoration-style: dotted;
+        }
+
+        .stat-clickable:hover {
+            opacity: 0.8;
+        }
+
+        .incline-warning {
+            color: #ff9500;
+            font-size: 0.9em;
+        }
+
+        .session-invalid {
+            opacity: 0.7;
+            font-style: italic;
+            border-left-color: #ff3b30;
+        }
+
+        .export-buttons {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            flex-wrap: wrap;
         }
 
         .no-data {

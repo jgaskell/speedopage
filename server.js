@@ -98,8 +98,24 @@ db.serialize(() => {
     distance REAL,
     duration INTEGER,
     timers TEXT,
+    onIncline BOOLEAN DEFAULT 0,
     timestamp DATETIME
-  )`);
+  )`, (err) => {
+    if (err) console.error('Error creating sessions table:', err);
+
+    // Add onIncline column if it doesn't exist (migration for existing databases)
+    db.all("PRAGMA table_info(sessions)", (err, rows) => {
+      if (!err && rows) {
+        const hasOnIncline = rows.some(row => row.name === 'onIncline');
+        if (!hasOnIncline) {
+          db.run('ALTER TABLE sessions ADD COLUMN onIncline BOOLEAN DEFAULT 0', (err) => {
+            if (err) console.error('Error adding onIncline column:', err);
+            else console.log('Added onIncline column to sessions table');
+          });
+        }
+      }
+    });
+  });
 });
 
 app.get('/', (req, res) => {
@@ -122,14 +138,16 @@ app.post('/api/log-speed', rateLimit, (req, res) => {
 
 // Save session summary
 app.post('/api/save-session', rateLimit, (req, res) => {
-  const { deviceId, startTime, endTime, vMax, distance, duration, timers } = req.body;
+  const { deviceId, startTime, endTime, vMax, distance, duration, timers, onIncline } = req.body;
   if (!deviceId || !startTime || !endTime) {
     return res.status(400).json({ error: 'Invalid session data' });
   }
   const timersJSON = JSON.stringify(timers);
+  const inclineFlag = onIncline ? 1 : 0;
+
   db.run(
-    'INSERT INTO sessions (deviceId, startTime, endTime, vMax, distance, duration, timers, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [deviceId, startTime, endTime, vMax, distance, duration, timersJSON, new Date().toISOString()],
+    'INSERT INTO sessions (deviceId, startTime, endTime, vMax, distance, duration, timers, onIncline, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [deviceId, startTime, endTime, vMax, distance, duration, timersJSON, inclineFlag, new Date().toISOString()],
     function(err) {
       if (err) {
         console.error(err);
