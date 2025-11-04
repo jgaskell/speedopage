@@ -499,12 +499,22 @@ function loadSummary() {
                 <button class="btn" onclick="generateGTRTestData()">🏎️ Generate R35 GT-R Data (750bhp)</button>
             </div>
         </div>
+
+        <div class="summary-section">
+            <h3>Data Management</h3>
+            <p style="opacity: 0.7; font-size: 0.9em; margin-bottom: 15px;">Remove session data from the database</p>
+            <div class="export-buttons">
+                <button class="btn btn-reset" onclick="removeSampleData()">🗑️ Remove Sample Data</button>
+                <button class="btn btn-reset" onclick="removeUserData()">🗑️ Remove Your Data</button>
+                <button class="btn btn-reset" onclick="removeAllData()">⚠️ Remove All Data</button>
+            </div>
+        </div>
     `;
 
     document.getElementById('summary-content').innerHTML = summaryContent;
 
-    // Load session history
-    fetch(`/api/sessions/${deviceId}`)
+    // Load session history (includes user's own data + sample data)
+    fetch(`/api/sessions/${deviceId}/all`)
         .then(res => res.json())
         .then(data => {
             const historyEl = document.getElementById('session-history');
@@ -522,15 +532,42 @@ function loadSummary() {
                     const inclineIndicator = session.onIncline ? ' <span class="incline-warning" title="Achieved on downhill">⚠️ Downhill</span>' : '';
                     const inclineClass = session.onIncline ? 'session-invalid' : '';
 
+                    // Mark sample data sessions
+                    const isSample = session.deviceId && session.deviceId.startsWith('SAMPLE-');
+                    const sampleBadge = isSample ? ' <span style="background: rgba(0, 212, 255, 0.2); padding: 2px 8px; border-radius: 4px; font-size: 0.85em;">🏎️ Sample</span>' : '';
+
+                    // Build timers HTML for accordion
+                    let timersHTML = '';
+                    if (session.timers && Object.keys(session.timers).length > 0) {
+                        timersHTML = '<div class="session-timers" style="display: none;"><div class="timers-grid">';
+                        for (const [key, value] of Object.entries(session.timers)) {
+                            const timerTime = typeof value === 'object' ? value.time : value;
+                            const timerInvalid = typeof value === 'object' && value.invalid;
+                            const invalidClass = timerInvalid ? 'timer-invalid' : '';
+                            const invalidIcon = timerInvalid ? ' ⚠️' : '';
+
+                            timersHTML += `
+                                <div class="timer-item ${invalidClass}">
+                                    <span class="timer-label">${key}${invalidIcon}</span>
+                                    <span class="timer-value">${timerTime}</span>
+                                </div>
+                            `;
+                        }
+                        timersHTML += '</div></div>';
+                    }
+
+                    const expandIcon = timersHTML ? '<span class="expand-icon" style="float: right; cursor: pointer; user-select: none;">▼</span>' : '';
+
                     return `
-                        <div class="history-item ${inclineClass}">
-                            <div class="history-date">${new Date(session.timestamp).toLocaleString()}</div>
+                        <div class="history-item ${inclineClass}" onclick="toggleSessionDetails(this)" style="cursor: pointer;">
+                            <div class="history-date">${new Date(session.timestamp).toLocaleString()}${sampleBadge}${expandIcon}</div>
                             <div class="history-stats">
                                 <span>vMax: ${vMaxDisplay} ${summaryUnits.speed}</span>
                                 <span>Distance: ${distDisplay} ${summaryUnits.distance}</span>
                                 <span>Duration: ${duration}</span>
                                 ${inclineIndicator}
                             </div>
+                            ${timersHTML}
                         </div>
                     `;
                 }).join('');
@@ -541,6 +578,25 @@ function loadSummary() {
         .catch(err => {
             document.getElementById('session-history').innerHTML = '<p class="error">Failed to load history</p>';
         });
+}
+
+function toggleSessionDetails(element) {
+    const timersDiv = element.querySelector('.session-timers');
+    const expandIcon = element.querySelector('.expand-icon');
+
+    if (timersDiv && expandIcon) {
+        const isExpanded = timersDiv.style.display !== 'none';
+
+        if (isExpanded) {
+            // Collapse
+            timersDiv.style.display = 'none';
+            expandIcon.textContent = '▼';
+        } else {
+            // Expand
+            timersDiv.style.display = 'block';
+            expandIcon.textContent = '▲';
+        }
+    }
 }
 
 function formatDuration(seconds) {
@@ -555,8 +611,11 @@ function formatDuration(seconds) {
 
 function generateGTRTestData() {
     // Generate realistic test data for 750bhp R35 GT-R
-    const confirmation = confirm('Generate test data for a 750bhp R35 GT-R?\n\nThis will create 10 sample sessions in your database with realistic performance times.');
+    const confirmation = confirm('Generate sample data for a 750bhp R35 GT-R?\n\nThis will create 10 demo sessions with comprehensive performance metrics.\n\nNote: Sample data will be marked with deviceId starting with "SAMPLE-"');
     if (!confirmation) return;
+
+    // Use special deviceId prefix to identify sample data
+    const sampleDeviceId = 'SAMPLE-GTR-' + crypto.randomUUID().substring(0, 8);
 
     const testSessions = [
         {
@@ -741,7 +800,7 @@ function generateGTRTestData() {
             const startTime = new Date(timestamp.getTime() - session.duration * 1000);
 
             const sessionData = {
-                deviceId: deviceId,
+                deviceId: sampleDeviceId,
                 startTime: startTime.toISOString(),
                 endTime: timestamp.toISOString(),
                 vMax: session.vMax,
@@ -792,8 +851,8 @@ function generateGTRTestData() {
 }
 
 function exportCSV() {
-    // Fetch all sessions and export to CSV
-    fetch(`/api/sessions/${deviceId}`)
+    // Fetch all sessions (user + sample data) and export to CSV
+    fetch(`/api/sessions/${deviceId}/all`)
         .then(res => res.json())
         .then(data => {
             if (!data.sessions || data.sessions.length === 0) {
@@ -873,6 +932,82 @@ function exportCSV() {
         .catch(err => {
             console.error('Export failed:', err);
             alert('Failed to export data. Please try again.');
+        });
+}
+
+function removeSampleData() {
+    if (!confirm('Remove all sample GT-R data?\n\nThis will delete all sessions with SAMPLE- device IDs.')) {
+        return;
+    }
+
+    fetch('/api/sessions/sample', { method: 'DELETE' })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                alert(`✓ Deleted ${data.deleted} sample session${data.deleted !== 1 ? 's' : ''}`);
+                if (currentView === 'summary') {
+                    loadSummary(); // Refresh summary view
+                }
+            } else {
+                alert('Failed to delete sample data: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(err => {
+            console.error('Delete sample data failed:', err);
+            alert('Failed to delete sample data. Please try again.');
+        });
+}
+
+function removeUserData() {
+    if (!confirm('⚠️ Remove YOUR performance data?\n\nThis will delete all your recorded sessions.\n\nThis CANNOT be undone!\n\nClick OK to continue.')) {
+        return;
+    }
+
+    fetch(`/api/sessions/${deviceId}/user`, { method: 'DELETE' })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                alert(`✓ Deleted ${data.deleted} of your session${data.deleted !== 1 ? 's' : ''}`);
+                if (currentView === 'summary') {
+                    loadSummary(); // Refresh summary view
+                }
+            } else {
+                alert('Failed to delete your data: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(err => {
+            console.error('Delete user data failed:', err);
+            alert('Failed to delete your data. Please try again.');
+        });
+}
+
+function removeAllData() {
+    const confirm1 = confirm('⚠️⚠️⚠️ DANGER: Remove ALL data?\n\nThis will delete EVERYTHING from the database.\n\n• All user sessions\n• All sample data\n• Everything!\n\nThis CANNOT be undone!\n\nClick OK to proceed to final confirmation.');
+    if (!confirm1) {
+        return;
+    }
+
+    const confirm2 = prompt('Type "DELETE ALL" (all caps, no quotes) to confirm:');
+    if (confirm2 !== 'DELETE ALL') {
+        alert('Cancelled - confirmation text did not match.');
+        return;
+    }
+
+    fetch('/api/sessions/all/CONFIRM-DELETE-ALL', { method: 'DELETE' })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                alert(`⚠️ DELETED ALL ${data.deleted} sessions from database`);
+                if (currentView === 'summary') {
+                    loadSummary(); // Refresh summary view
+                }
+            } else {
+                alert('Failed to delete all data: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(err => {
+            console.error('Delete all data failed:', err);
+            alert('Failed to delete all data. Please try again.');
         });
 }
 

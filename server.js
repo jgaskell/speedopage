@@ -229,6 +229,111 @@ app.get('/api/sessions/:deviceId', rateLimit, (req, res) => {
   );
 });
 
+// Get ALL sessions (user's own + sample data) for display purposes
+app.get('/api/sessions/:deviceId/all', rateLimit, (req, res) => {
+  const { deviceId } = req.params;
+
+  // Validate deviceId format (UUID or SAMPLE-)
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const isSample = deviceId.startsWith('SAMPLE-');
+
+  if (!isSample && !uuidRegex.test(deviceId)) {
+    return res.status(400).json({ error: 'Invalid device ID format' });
+  }
+
+  // Get both user's sessions AND sample data, sorted by timestamp
+  db.all(
+    "SELECT * FROM sessions WHERE deviceId = ? OR deviceId LIKE 'SAMPLE-%' ORDER BY timestamp DESC LIMIT 50",
+    [deviceId],
+    (err, rows) => {
+      if (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      // Safe JSON parsing with error handling
+      const sessions = rows.map(row => {
+        let timers = {};
+        if (row.timers) {
+          try {
+            timers = JSON.parse(row.timers);
+          } catch (parseErr) {
+            console.error('Failed to parse timers JSON for session', row.id, parseErr);
+            timers = {};
+          }
+        }
+        return {
+          ...row,
+          timers
+        };
+      });
+      res.json({ sessions });
+    }
+  );
+});
+
+// Delete sample data (deviceId starts with "SAMPLE-")
+app.delete('/api/sessions/sample', rateLimit, (req, res) => {
+  db.run(
+    "DELETE FROM sessions WHERE deviceId LIKE 'SAMPLE-%'",
+    function(err) {
+      if (err) {
+        console.error('Error deleting sample data:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      console.log(`Deleted ${this.changes} sample sessions`);
+      res.json({ success: true, deleted: this.changes });
+    }
+  );
+});
+
+// Delete user's own data (specific deviceId)
+app.delete('/api/sessions/:deviceId/user', rateLimit, (req, res) => {
+  const { deviceId } = req.params;
+
+  // Validate UUID format
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(deviceId)) {
+    return res.status(400).json({ error: 'Invalid device ID format' });
+  }
+
+  // Don't delete sample data with this endpoint
+  if (deviceId.startsWith('SAMPLE-')) {
+    return res.status(400).json({ error: 'Use /api/sessions/sample to delete sample data' });
+  }
+
+  db.run(
+    'DELETE FROM sessions WHERE deviceId = ?',
+    [deviceId],
+    function(err) {
+      if (err) {
+        console.error('Error deleting user data:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      console.log(`Deleted ${this.changes} sessions for device ${deviceId}`);
+      res.json({ success: true, deleted: this.changes });
+    }
+  );
+});
+
+// Delete ALL session data (requires confirmation token)
+app.delete('/api/sessions/all/:confirmToken', rateLimit, (req, res) => {
+  const { confirmToken } = req.params;
+
+  // Require specific confirmation token to prevent accidental deletion
+  if (confirmToken !== 'CONFIRM-DELETE-ALL') {
+    return res.status(400).json({ error: 'Invalid confirmation token' });
+  }
+
+  db.run('DELETE FROM sessions', function(err) {
+    if (err) {
+      console.error('Error deleting all data:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+    console.log(`⚠️ Deleted ALL ${this.changes} sessions from database`);
+    res.json({ success: true, deleted: this.changes });
+  });
+});
+
 // Catch-all route to prevent enumeration of files/directories
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
