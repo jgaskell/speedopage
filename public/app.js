@@ -1025,10 +1025,23 @@ function removeAllData() {
 // Authentication Functions
 // =======================
 
-function checkAuthStatus() {
+async function checkAuthStatus() {
     isAuthenticated = AuthService.isAuthenticated();
     currentUser = AuthService.getUser();
     hasChosenAuthOption = localStorage.getItem('hasChosenAuthOption') === 'true';
+
+    // If user appears authenticated, validate the token with server
+    if (isAuthenticated && currentUser) {
+        const validationResult = await AuthService.validateToken();
+        if (!validationResult) {
+            // Token is invalid or expired, clear auth state
+            isAuthenticated = false;
+            currentUser = null;
+            AuthService.removeToken();
+            AuthService.removeUser();
+            // Don't reset hasChosenAuthOption - they may have chosen guest mode
+        }
+    }
 
     updateAuthUI();
 }
@@ -1395,6 +1408,15 @@ async function loadUserCars() {
         renderCarsList();
     } else {
         console.error('Failed to load cars:', result.error);
+
+        // If auth error, clear auth state and don't show car UI
+        if (result.needsAuth) {
+            isAuthenticated = false;
+            currentUser = null;
+            AuthService.removeToken();
+            AuthService.removeUser();
+            updateAuthUI();
+        }
     }
 }
 
@@ -1627,7 +1649,7 @@ function setupGarageEventListeners() {
 
 async function init() {
     // Check authentication status first
-    checkAuthStatus();
+    await checkAuthStatus();
     setupAuthEventListeners();
     setupGarageEventListeners();
 
