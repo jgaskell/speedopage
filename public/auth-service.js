@@ -52,10 +52,18 @@ const AuthService = {
   },
 
   /**
-   * Check if user is authenticated
+   * Check if user is authenticated (has token AND user data)
    */
   isAuthenticated() {
-    return !!this.getToken();
+    return !!this.getToken() && !!this.getUser();
+  },
+
+  /**
+   * Validate token by checking with server
+   */
+  async validateToken() {
+    const result = await this.getCurrentUser();
+    return result.success;
   },
 
   /**
@@ -177,6 +185,15 @@ const AuthService = {
   async apiRequest(url, options = {}) {
     const token = this.getToken();
 
+    // Check if token exists for authenticated requests
+    if (!token) {
+      return {
+        success: false,
+        error: 'Please login to continue',
+        needsAuth: true
+      };
+    }
+
     const headers = {
       ...options.headers,
       'Content-Type': 'application/json'
@@ -199,6 +216,11 @@ const AuthService = {
         if (response.status === 401) {
           this.removeToken();
           this.removeUser();
+          return {
+            success: false,
+            error: 'Your session has expired. Please login again.',
+            needsAuth: true
+          };
         }
         throw new Error(data.error || 'API request failed');
       }

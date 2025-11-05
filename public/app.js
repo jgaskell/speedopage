@@ -1225,10 +1225,46 @@ function toggleView(view) {
     } else if (view === 'summary') {
         summaryView.style.display = 'block';
         btnSummary.classList.add('active');
+        loadSummary(); // Load summary data when switching to summary view
     } else if (view === 'garage') {
         garageView.style.display = 'block';
         btnGarage.classList.add('active');
     }
+}
+
+// ============================================================================
+// SUMMARY VIEW
+// ============================================================================
+
+async function loadSummary() {
+    const summaryContent = document.getElementById('summary-content');
+
+    // Show loading state
+    summaryContent.innerHTML = '<p style="text-align: center; padding: 40px;">Loading your data...</p>';
+
+    // For now, show an empty state message
+    // TODO: Implement actual session data loading from database
+    summaryContent.innerHTML = `
+        <div style="text-align: center; padding: 60px 20px;">
+            <h2 style="color: #00d4ff; margin-bottom: 20px;">Summary View</h2>
+            <p style="color: rgba(255, 255, 255, 0.7); margin-bottom: 30px;">
+                This feature will display your performance history, best times, and statistics.
+            </p>
+            <div style="background: rgba(0, 0, 0, 0.3); padding: 30px; border-radius: 15px; max-width: 600px; margin: 0 auto;">
+                <h3 style="color: #00ff88; margin-bottom: 15px;">Coming Soon:</h3>
+                <ul style="list-style: none; padding: 0; text-align: left; color: rgba(255, 255, 255, 0.8);">
+                    <li style="margin: 10px 0;">📊 Session history with dates</li>
+                    <li style="margin: 10px 0;">🏆 Personal best times</li>
+                    <li style="margin: 10px 0;">📈 Performance graphs and trends</li>
+                    <li style="margin: 10px 0;">🔍 Filter by car and date range</li>
+                    <li style="margin: 10px 0;">📤 Export data to CSV</li>
+                </ul>
+            </div>
+            <p style="color: rgba(255, 255, 255, 0.5); margin-top: 30px; font-size: 0.9em;">
+                Start recording runs with the Speedometer view to see your data here!
+            </p>
+        </div>
+    `;
 }
 
 // ============================================================================
@@ -1459,6 +1495,19 @@ function setupGarageEventListeners() {
         } else {
             carFormError.textContent = result.error || 'Failed to save car';
             carFormError.style.display = 'block';
+
+            // If auth error, prompt user to login and close modal
+            if (result.needsAuth) {
+                setTimeout(() => {
+                    carModal.style.display = 'none';
+                    carForm.reset();
+                    editingCarId = null;
+                    // Reset auth state and show login prompt
+                    isAuthenticated = false;
+                    currentUser = null;
+                    updateAuthUI();
+                }, 2000); // Show error for 2 seconds before closing
+            }
         }
 
         submitBtn.disabled = false;
