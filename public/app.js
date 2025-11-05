@@ -1236,35 +1236,145 @@ function toggleView(view) {
 // SUMMARY VIEW
 // ============================================================================
 
-async function loadSummary() {
-    const summaryContent = document.getElementById('summary-content');
+function loadSummary() {
+    const vMaxValue = summaryUnits.speed === 'mph' ? toMph(sessionVmax) : sessionVmax;
+    const distValue = summaryUnits.distance === 'mi' ? (totalDistance * 0.621371) : totalDistance;
 
-    // Show loading state
-    summaryContent.innerHTML = '<p style="text-align: center; padding: 40px;">Loading your data...</p>';
-
-    // For now, show an empty state message
-    // TODO: Implement actual session data loading from database
-    summaryContent.innerHTML = `
-        <div style="text-align: center; padding: 60px 20px;">
-            <h2 style="color: #00d4ff; margin-bottom: 20px;">Summary View</h2>
-            <p style="color: rgba(255, 255, 255, 0.7); margin-bottom: 30px;">
-                This feature will display your performance history, best times, and statistics.
-            </p>
-            <div style="background: rgba(0, 0, 0, 0.3); padding: 30px; border-radius: 15px; max-width: 600px; margin: 0 auto;">
-                <h3 style="color: #00ff88; margin-bottom: 15px;">Coming Soon:</h3>
-                <ul style="list-style: none; padding: 0; text-align: left; color: rgba(255, 255, 255, 0.8);">
-                    <li style="margin: 10px 0;">📊 Session history with dates</li>
-                    <li style="margin: 10px 0;">🏆 Personal best times</li>
-                    <li style="margin: 10px 0;">📈 Performance graphs and trends</li>
-                    <li style="margin: 10px 0;">🔍 Filter by car and date range</li>
-                    <li style="margin: 10px 0;">📤 Export data to CSV</li>
-                </ul>
+    const summaryContent = `
+        <div class="summary-section">
+            <h3>Current Session</h3>
+            <div class="summary-grid">
+                <div class="summary-stat">
+                    <span class="stat-label">vMax</span>
+                    <span class="stat-value stat-clickable" onclick="toggleSummaryUnits('speed')" title="Click to toggle units">
+                        ${vMaxValue.toFixed(1)} ${summaryUnits.speed}
+                    </span>
+                </div>
+                <div class="summary-stat">
+                    <span class="stat-label">Distance</span>
+                    <span class="stat-value stat-clickable" onclick="toggleSummaryUnits('distance')" title="Click to toggle units">
+                        ${distValue.toFixed(2)} ${summaryUnits.distance}
+                    </span>
+                </div>
+                <div class="summary-stat">
+                    <span class="stat-label">Duration</span>
+                    <span class="stat-value">${sessionStart ? formatDuration((Date.now() - new Date(sessionStart)) / 1000) : '0s'}</span>
+                </div>
             </div>
-            <p style="color: rgba(255, 255, 255, 0.5); margin-top: 30px; font-size: 0.9em;">
-                Start recording runs with the Speedometer view to see your data here!
-            </p>
+        </div>
+
+        <div class="summary-section">
+            <h3>Performance Timers</h3>
+            <div class="summary-timers">
+                ${Object.keys(timers).length > 0 ?
+                    Object.entries(timers).map(([key, value]) => `
+                        <div class="summary-timer">
+                            <span class="timer-name">${key}</span>
+                            <span class="timer-time">${value}</span>
+                        </div>
+                    `).join('') :
+                    '<p class="no-data">No timer data recorded yet</p>'
+                }
+            </div>
+        </div>
+
+        <div class="summary-section">
+            <h3>Session History</h3>
+            <div id="session-history">Loading...</div>
+        </div>
+
+        <div class="summary-section">
+            <h3>Export Data</h3>
+            <div class="export-buttons">
+                <button class="btn" onclick="exportCSV()">📊 Export to Excel/CSV</button>
+            </div>
+        </div>
+
+        <div class="summary-section">
+            <h3>Test Data</h3>
+            <p style="opacity: 0.7; font-size: 0.9em; margin-bottom: 15px;">Generate sample performance data for demonstration purposes</p>
+            <div class="export-buttons">
+                <button class="btn" onclick="generateGTRTestData()">🏎️ Generate R35 GT-R Data (750bhp)</button>
+            </div>
+        </div>
+
+        <div class="summary-section">
+            <h3>Data Management</h3>
+            <p style="opacity: 0.7; font-size: 0.9em; margin-bottom: 15px;">Remove session data from the database</p>
+            <div class="export-buttons">
+                <button class="btn btn-reset" onclick="removeSampleData()">🗑️ Remove Sample Data</button>
+                <button class="btn btn-reset" onclick="removeUserData()">🗑️ Remove Your Data</button>
+                <button class="btn btn-reset" onclick="removeAllData()">⚠️ Remove All Data</button>
+            </div>
         </div>
     `;
+
+    document.getElementById('summary-content').innerHTML = summaryContent;
+
+    // Load session history (includes user's own data + sample data)
+    fetch(`/api/sessions/${deviceId}/all`)
+        .then(res => res.json())
+        .then(data => {
+            const historyEl = document.getElementById('session-history');
+            if (data.sessions && data.sessions.length > 0) {
+                historyEl.innerHTML = data.sessions.map(session => {
+                    const vMax = (session.vMax || 0);
+                    const distance = (session.distance || 0);
+                    const duration = formatDuration(session.duration || 0);
+
+                    // Convert based on summary units preference
+                    const vMaxDisplay = summaryUnits.speed === 'mph' ? toMph(vMax).toFixed(1) : vMax.toFixed(1);
+                    const distDisplay = summaryUnits.distance === 'mi' ? (distance * 0.621371).toFixed(2) : distance.toFixed(2);
+
+                    const inclineIndicator = session.onIncline ? ' <span class="incline-warning" title="Achieved on downhill">⚠️ Downhill</span>' : '';
+                    const inclineClass = session.onIncline ? 'session-invalid' : '';
+
+                    // Mark sample data sessions
+                    const isSample = session.deviceId && session.deviceId.startsWith('SAMPLE-');
+                    const sampleBadge = isSample ? ' <span style="background: rgba(0, 212, 255, 0.2); padding: 2px 8px; border-radius: 4px; font-size: 0.85em;">🏎️ Sample</span>' : '';
+
+                    // Build timers HTML for accordion
+                    let timersHTML = '';
+                    if (session.timers && Object.keys(session.timers).length > 0) {
+                        timersHTML = '<div class="session-timers" style="display: none;"><div class="timers-grid">';
+                        for (const [key, value] of Object.entries(session.timers)) {
+                            const timerTime = typeof value === 'object' ? value.time : value;
+                            const timerInvalid = typeof value === 'object' && value.invalid;
+                            const invalidClass = timerInvalid ? 'timer-invalid' : '';
+                            const invalidIcon = timerInvalid ? ' ⚠️' : '';
+
+                            timersHTML += `
+                                <div class="timer-item ${invalidClass}">
+                                    <span class="timer-label">${key}${invalidIcon}</span>
+                                    <span class="timer-value">${timerTime}</span>
+                                </div>
+                            `;
+                        }
+                        timersHTML += '</div></div>';
+                    }
+
+                    const expandIcon = timersHTML ? '<span class="expand-icon" style="float: right; cursor: pointer; user-select: none;">▼</span>' : '';
+
+                    return `
+                        <div class="history-item ${inclineClass}" onclick="toggleSessionDetails(this)" style="cursor: pointer;">
+                            <div class="history-date">${new Date(session.timestamp).toLocaleString()}${sampleBadge}${expandIcon}</div>
+                            <div class="history-stats">
+                                <span>vMax: ${vMaxDisplay} ${summaryUnits.speed}</span>
+                                <span>Distance: ${distDisplay} ${summaryUnits.distance}</span>
+                                <span>Duration: ${duration}</span>
+                                ${inclineIndicator}
+                            </div>
+                            ${timersHTML}
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                historyEl.innerHTML = '<p class="no-data">No previous sessions</p>';
+            }
+        })
+        .catch(err => {
+            document.getElementById('session-history').innerHTML = '<p class="error">Failed to load history</p>';
+        });
 }
 
 // ============================================================================
