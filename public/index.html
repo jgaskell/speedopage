@@ -433,17 +433,352 @@
         .container > * {
             animation: fadeIn 0.6s ease-out;
         }
+
+        /* Modal styles */
+        .modal {
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(5px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background: linear-gradient(135deg, #1a1a2e, #16213e);
+            padding: 40px;
+            border-radius: 15px;
+            width: 90%;
+            max-width: 450px;
+            box-shadow: 0 10px 40px rgba(0, 212, 255, 0.3);
+            border: 1px solid rgba(0, 212, 255, 0.2);
+            position: relative;
+        }
+
+        .modal-close {
+            position: absolute;
+            top: 15px;
+            right: 20px;
+            font-size: 28px;
+            font-weight: bold;
+            color: #fff;
+            cursor: pointer;
+            opacity: 0.6;
+            transition: opacity 0.3s;
+        }
+
+        .modal-close:hover {
+            opacity: 1;
+        }
+
+        .modal-content h2 {
+            margin-bottom: 25px;
+            color: #00d4ff;
+            text-align: center;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: rgba(255, 255, 255, 0.9);
+            font-weight: 500;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.05);
+            color: #fff;
+            font-size: 1em;
+            transition: all 0.3s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #00d4ff;
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .error-message {
+            background: rgba(255, 59, 48, 0.2);
+            color: #ff3b30;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border: 1px solid rgba(255, 59, 48, 0.3);
+        }
+
+        .auth-switch {
+            text-align: center;
+            margin-top: 20px;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .auth-switch a {
+            color: #00d4ff;
+            text-decoration: none;
+            margin-left: 5px;
+            font-weight: 600;
+        }
+
+        .auth-switch a:hover {
+            text-decoration: underline;
+        }
+
+        #auth-submit-btn {
+            width: 100%;
+            margin-top: 10px;
+        }
+
+        /* Garage View Styles */
+        #garage-view {
+            padding: 20px 0;
+        }
+
+        #garage-view h2 {
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2em;
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        #btn-add-car {
+            display: block;
+            margin: 0 auto 30px;
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            border: none;
+            padding: 14px 32px;
+            font-size: 1.1em;
+        }
+
+        .btn-primary {
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            border: none;
+        }
+
+        .btn-primary:hover {
+            background: linear-gradient(90deg, #00b8e6, #00e67a);
+            box-shadow: 0 5px 20px rgba(0, 212, 255, 0.6);
+        }
+
+        .cars-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 25px;
+            margin-top: 20px;
+        }
+
+        .car-card {
+            background: linear-gradient(135deg, rgba(26, 26, 46, 0.9), rgba(22, 33, 62, 0.9));
+            border-radius: 15px;
+            padding: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .car-card:hover {
+            transform: translateY(-5px);
+            border-color: rgba(0, 212, 255, 0.4);
+            box-shadow: 0 10px 30px rgba(0, 212, 255, 0.3);
+        }
+
+        .car-card.active-car {
+            border: 2px solid #00d4ff;
+            box-shadow: 0 5px 25px rgba(0, 212, 255, 0.5);
+        }
+
+        .active-badge {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            color: #000;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.75em;
+            font-weight: bold;
+        }
+
+        .car-photo {
+            width: 100%;
+            height: 180px;
+            object-fit: cover;
+            border-radius: 10px;
+            margin-bottom: 15px;
+            background: rgba(0, 0, 0, 0.3);
+        }
+
+        .car-info h3 {
+            margin-bottom: 10px;
+            color: #00d4ff;
+            font-size: 1.3em;
+        }
+
+        .car-details {
+            color: rgba(255, 255, 255, 0.8);
+            margin-bottom: 15px;
+            line-height: 1.6;
+        }
+
+        .car-details p {
+            margin: 5px 0;
+        }
+
+        .car-stats {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 12px;
+            border-radius: 8px;
+            margin: 15px 0;
+        }
+
+        .car-stats h4 {
+            color: #00ff88;
+            margin-bottom: 8px;
+            font-size: 0.9em;
+        }
+
+        .car-stats p {
+            margin: 3px 0;
+            font-size: 0.85em;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .car-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .car-actions button {
+            flex: 1;
+            padding: 10px;
+            font-size: 0.9em;
+        }
+
+        .btn-set-active {
+            background: rgba(0, 255, 136, 0.2);
+            border-color: rgba(0, 255, 136, 0.5);
+        }
+
+        .btn-set-active:hover {
+            background: rgba(0, 255, 136, 0.4);
+        }
+
+        .btn-edit {
+            background: rgba(0, 212, 255, 0.2);
+            border-color: rgba(0, 212, 255, 0.5);
+        }
+
+        .btn-edit:hover {
+            background: rgba(0, 212, 255, 0.4);
+        }
+
+        .btn-delete {
+            background: rgba(255, 59, 48, 0.2);
+            border-color: rgba(255, 59, 48, 0.5);
+        }
+
+        .btn-delete:hover {
+            background: rgba(255, 59, 48, 0.4);
+        }
+
+        .empty-garage {
+            text-align: center;
+            padding: 60px 20px;
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 1.2em;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .form-actions {
+            display: flex;
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .form-actions button {
+            flex: 1;
+        }
+
+        @media (max-width: 768px) {
+            .cars-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .form-row {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
             <h1>SpeedoPage</h1>
+            <div id="user-info" style="display: none; margin-top: 15px;">
+                <span id="user-name">Welcome, User</span>
+                <button id="btn-logout" class="btn" style="padding: 8px 20px; font-size: 0.9em; margin-left: 10px;">Logout</button>
+            </div>
+            <div id="auth-prompt" style="display: none; margin-top: 15px;">
+                <p style="margin-bottom: 10px;">Sign in to save your sessions across devices</p>
+                <button id="btn-show-login" class="btn" style="padding: 10px 24px; margin-right: 10px;">Login</button>
+                <button id="btn-show-register" class="btn" style="padding: 10px 24px; margin-right: 10px;">Register</button>
+                <button id="btn-continue-guest" class="btn" style="padding: 10px 24px;">Continue as Guest</button>
+            </div>
         </header>
+
+        <!-- Auth Modal -->
+        <div id="auth-modal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <span class="modal-close">&times;</span>
+                <h2 id="auth-modal-title">Login</h2>
+                <form id="auth-form">
+                    <div class="form-group">
+                        <label for="auth-email">Email</label>
+                        <input type="email" id="auth-email" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="auth-password">Password</label>
+                        <input type="password" id="auth-password" required minlength="8">
+                    </div>
+                    <div class="form-group" id="display-name-group" style="display: none;">
+                        <label for="auth-display-name">Display Name (optional)</label>
+                        <input type="text" id="auth-display-name" maxlength="50">
+                    </div>
+                    <div id="auth-error" class="error-message" style="display: none;"></div>
+                    <button type="submit" class="btn" id="auth-submit-btn">Login</button>
+                </form>
+                <p class="auth-switch">
+                    <span id="auth-switch-text">Don't have an account?</span>
+                    <a href="#" id="auth-switch-link">Register here</a>
+                </p>
+            </div>
+        </div>
 
         <div class="nav-buttons">
             <button id="btn-speedometer" class="btn active">Speedometer</button>
             <button id="btn-summary" class="btn">Summary</button>
+            <button id="btn-garage" class="btn" style="display: none;">My Garage</button>
             <button id="btn-reset" class="btn btn-reset">Reset Session</button>
         </div>
 
@@ -480,8 +815,75 @@
         <div id="summary-view">
             <div id="summary-content"></div>
         </div>
+
+        <!-- Garage View -->
+        <div id="garage-view" style="display: none;">
+            <h2>My Garage</h2>
+
+            <button id="btn-add-car" class="btn btn-primary">+ Add Car</button>
+
+            <div id="cars-grid" class="cars-grid">
+                <!-- Car cards will be dynamically inserted here -->
+            </div>
+
+            <div id="empty-garage" class="empty-garage" style="display: none;">
+                <p>Your garage is empty. Add your first car to get started!</p>
+            </div>
+        </div>
     </div>
 
+    <!-- Add/Edit Car Modal -->
+    <div id="car-modal" class="modal">
+        <div class="modal-content">
+            <span class="modal-close" id="car-modal-close">&times;</span>
+            <h2 id="car-modal-title">Add Car</h2>
+
+            <form id="car-form">
+                <div class="form-group">
+                    <label for="car-name">Car Name *</label>
+                    <input type="text" id="car-name" placeholder="e.g., My GT-R" required>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="car-make">Make *</label>
+                        <input type="text" id="car-make" placeholder="e.g., Nissan" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="car-model">Model *</label>
+                        <input type="text" id="car-model" placeholder="e.g., GT-R" required>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="car-year">Year</label>
+                        <input type="number" id="car-year" placeholder="e.g., 2023" min="1900" max="2100">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="car-horsepower">Horsepower</label>
+                        <input type="number" id="car-horsepower" placeholder="e.g., 565" min="0">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="car-photo-url">Photo URL</label>
+                    <input type="url" id="car-photo-url" placeholder="https://example.com/car.jpg">
+                </div>
+
+                <div id="car-form-error" class="error-message" style="display: none;"></div>
+
+                <div class="form-actions">
+                    <button type="button" id="car-form-cancel" class="btn">Cancel</button>
+                    <button type="submit" id="car-form-submit" class="btn btn-primary">Save Car</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="auth-service.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

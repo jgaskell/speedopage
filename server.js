@@ -118,6 +118,21 @@ db.serialize(() => {
   });
 });
 
+// Authentication routes
+const authRoutes = require('./routes/auth');
+authRoutes.setDatabase(db);
+app.use('/api/auth', authRoutes.router);
+
+// Car management routes
+const carRoutes = require('./routes/cars');
+carRoutes.setDatabase(db);
+app.use('/api/cars', carRoutes.router);
+
+// User profile routes
+const userRoutes = require('./routes/users');
+userRoutes.setDatabase(db);
+app.use('/api/users', userRoutes.router);
+
 app.get('/', (req, res) => {
   res.sendFile(__dirname + '/public/index.html');
 });
@@ -136,14 +151,27 @@ app.post('/api/log-speed', rateLimit, (req, res) => {
   });
 });
 
-// Save session summary
-app.post('/api/save-session', rateLimit, (req, res) => {
-  const { deviceId, startTime, endTime, vMax, distance, duration, timers, onIncline } = req.body;
+// Save session summary (supports both authenticated users and anonymous)
+const { optionalAuth } = require('./middleware/auth');
 
-  // Validate required fields
-  if (!deviceId || !startTime || !endTime) {
-    console.error('Missing required fields:', { deviceId: !!deviceId, startTime: !!startTime, endTime: !!endTime });
+app.post('/api/save-session', rateLimit, optionalAuth, (req, res) => {
+  const { deviceId, carId, startTime, endTime, vMax, distance, duration, timers, onIncline } = req.body;
+  const userId = req.user ? req.user.userId : null;
+
+  // Validate required fields (either authenticated with carId, or anonymous with deviceId)
+  if (!startTime || !endTime) {
+    console.error('Missing required fields:', { startTime: !!startTime, endTime: !!endTime });
     return res.status(400).json({ error: 'Invalid session data: missing required fields' });
+  }
+
+  // For authenticated users, carId is required
+  if (userId && !carId) {
+    return res.status(400).json({ error: 'carId is required for authenticated users' });
+  }
+
+  // For anonymous users, deviceId is required
+  if (!userId && !deviceId) {
+    return res.status(400).json({ error: 'deviceId is required for anonymous users' });
   }
 
   // Safely stringify timers
@@ -157,36 +185,40 @@ app.post('/api/save-session', rateLimit, (req, res) => {
 
   const inclineFlag = onIncline ? 1 : 0;
 
-  // Check if onIncline column exists, use fallback if not
-  db.all("PRAGMA table_info(sessions)", (err, columns) => {
+  // Insert session with userId and carId (if authenticated) or deviceId (if anonymous)
+  const query = `INSERT INTO sessions (
+    userId, carId, deviceId, startTime, endTime, vMax, distance, duration,
+    timers, onIncline, createdAt
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+  const params = [
+    userId,
+    carId || null,
+    deviceId || null,
+    startTime,
+    endTime,
+    vMax,
+    distance,
+    duration,
+    timersJSON,
+    inclineFlag,
+    new Date().toISOString()
+  ];
+
+  db.run(query, params, function(err) {
     if (err) {
-      console.error('Error checking table schema:', err);
-      return res.status(500).json({ error: 'Database error' });
+      console.error('Database insert error:', err);
+      console.error('Query:', query);
+      console.error('Params:', params);
+      return res.status(500).json({ error: 'Database error', details: err.message });
     }
 
-    const hasOnIncline = columns.some(col => col.name === 'onIncline');
+    const logInfo = userId
+      ? `userId ${userId}, carId ${carId}`
+      : `deviceId ${deviceId}`;
 
-    let query, params;
-    if (hasOnIncline) {
-      query = 'INSERT INTO sessions (deviceId, startTime, endTime, vMax, distance, duration, timers, onIncline, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
-      params = [deviceId, startTime, endTime, vMax, distance, duration, timersJSON, inclineFlag, new Date().toISOString()];
-    } else {
-      // Fallback for older schema without onIncline
-      query = 'INSERT INTO sessions (deviceId, startTime, endTime, vMax, distance, duration, timers, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
-      params = [deviceId, startTime, endTime, vMax, distance, duration, timersJSON, new Date().toISOString()];
-      console.warn('onIncline column not found, using legacy schema');
-    }
-
-    db.run(query, params, function(err) {
-      if (err) {
-        console.error('Database insert error:', err);
-        console.error('Query:', query);
-        console.error('Params:', params);
-        return res.status(500).json({ error: 'Database error', details: err.message });
-      }
-      console.log(`Session saved: ID ${this.lastID}, deviceId ${deviceId}, vMax ${vMax}`);
-      res.json({ success: true, id: this.lastID });
-    });
+    console.log(`Session saved: ID ${this.lastID}, ${logInfo}, vMax ${vMax}`);
+    res.json({ success: true, id: this.lastID });
   });
 });
 

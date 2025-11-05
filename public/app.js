@@ -1,3 +1,13 @@
+// Authentication state
+let currentUser = null;
+let isAuthenticated = false;
+let hasChosenAuthOption = false; // Track if user has made auth choice
+
+// Garage state
+let userCars = [];
+let activeCar = null;
+let editingCarId = null;
+
 let units = 'kmh'; // default
 let altUnits = 'mph';
 let currentCountry = '';
@@ -1011,7 +1021,457 @@ function removeAllData() {
         });
 }
 
+// =======================
+// Authentication Functions
+// =======================
+
+function checkAuthStatus() {
+    isAuthenticated = AuthService.isAuthenticated();
+    currentUser = AuthService.getUser();
+    hasChosenAuthOption = localStorage.getItem('hasChosenAuthOption') === 'true';
+
+    updateAuthUI();
+}
+
+function updateAuthUI() {
+    const userInfo = document.getElementById('user-info');
+    const authPrompt = document.getElementById('auth-prompt');
+    const userName = document.getElementById('user-name');
+    const garageBtn = document.getElementById('btn-garage');
+
+    if (isAuthenticated && currentUser) {
+        // Show user info, hide auth prompt
+        userInfo.style.display = 'block';
+        authPrompt.style.display = 'none';
+        userName.textContent = `Welcome, ${currentUser.displayName || currentUser.email}`;
+        garageBtn.style.display = 'inline-block'; // Show garage button
+
+        // Load user's cars
+        loadUserCars();
+    } else if (hasChosenAuthOption) {
+        // User chose to continue as guest, hide both
+        userInfo.style.display = 'none';
+        authPrompt.style.display = 'none';
+        garageBtn.style.display = 'none'; // Hide garage button
+    } else {
+        // Show auth prompt
+        userInfo.style.display = 'none';
+        authPrompt.style.display = 'block';
+        garageBtn.style.display = 'none'; // Hide garage button
+    }
+}
+
+function setupAuthEventListeners() {
+    const modal = document.getElementById('auth-modal');
+    const closeBtn = document.querySelector('.modal-close');
+    const authForm = document.getElementById('auth-form');
+    const switchLink = document.getElementById('auth-switch-link');
+
+    let isLoginMode = true;
+
+    // Show login modal
+    document.getElementById('btn-show-login').addEventListener('click', () => {
+        isLoginMode = true;
+        updateModalMode();
+        modal.style.display = 'flex';
+    });
+
+    // Show register modal
+    document.getElementById('btn-show-register').addEventListener('click', () => {
+        isLoginMode = false;
+        updateModalMode();
+        modal.style.display = 'flex';
+    });
+
+    // Continue as guest
+    document.getElementById('btn-continue-guest').addEventListener('click', () => {
+        hasChosenAuthOption = true;
+        localStorage.setItem('hasChosenAuthOption', 'true');
+        updateAuthUI();
+    });
+
+    // Logout
+    document.getElementById('btn-logout').addEventListener('click', async () => {
+        await AuthService.logout();
+        currentUser = null;
+        isAuthenticated = false;
+        hasChosenAuthOption = false;
+        localStorage.removeItem('hasChosenAuthOption');
+        checkAuthStatus();
+    });
+
+    // Close modal
+    closeBtn.addEventListener('click', () => {
+        modal.style.display = 'none';
+        clearAuthForm();
+    });
+
+    // Close modal on outside click
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            modal.style.display = 'none';
+            clearAuthForm();
+        }
+    });
+
+    // Switch between login/register
+    switchLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        isLoginMode = !isLoginMode;
+        updateModalMode();
+    });
+
+    // Handle form submission
+    authForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const email = document.getElementById('auth-email').value;
+        const password = document.getElementById('auth-password').value;
+        const displayName = document.getElementById('auth-display-name').value;
+        const errorDiv = document.getElementById('auth-error');
+        const submitBtn = document.getElementById('auth-submit-btn');
+
+        // Disable submit button
+        submitBtn.disabled = true;
+        submitBtn.textContent = isLoginMode ? 'Logging in...' : 'Registering...';
+        errorDiv.style.display = 'none';
+
+        let result;
+        if (isLoginMode) {
+            result = await AuthService.login(email, password);
+        } else {
+            result = await AuthService.register(email, password, displayName);
+        }
+
+        if (result.success) {
+            // Success!
+            currentUser = result.user;
+            isAuthenticated = true;
+            hasChosenAuthOption = true;
+            localStorage.setItem('hasChosenAuthOption', 'true');
+
+            modal.style.display = 'none';
+            clearAuthForm();
+            updateAuthUI();
+        } else {
+            // Show error
+            errorDiv.textContent = result.error;
+            errorDiv.style.display = 'block';
+            submitBtn.disabled = false;
+            submitBtn.textContent = isLoginMode ? 'Login' : 'Register';
+        }
+    });
+
+    function updateModalMode() {
+        const title = document.getElementById('auth-modal-title');
+        const submitBtn = document.getElementById('auth-submit-btn');
+        const switchText = document.getElementById('auth-switch-text');
+        const displayNameGroup = document.getElementById('display-name-group');
+
+        if (isLoginMode) {
+            title.textContent = 'Login';
+            submitBtn.textContent = 'Login';
+            switchText.textContent = "Don't have an account?";
+            switchLink.textContent = 'Register here';
+            displayNameGroup.style.display = 'none';
+        } else {
+            title.textContent = 'Register';
+            submitBtn.textContent = 'Register';
+            switchText.textContent = 'Already have an account?';
+            switchLink.textContent = 'Login here';
+            displayNameGroup.style.display = 'block';
+        }
+        clearAuthForm();
+    }
+
+    function clearAuthForm() {
+        document.getElementById('auth-email').value = '';
+        document.getElementById('auth-password').value = '';
+        document.getElementById('auth-display-name').value = '';
+        document.getElementById('auth-error').style.display = 'none';
+        document.getElementById('auth-submit-btn').disabled = false;
+    }
+}
+
+// ============================================================================
+// VIEW SWITCHING
+// ============================================================================
+
+function toggleView(view) {
+    currentView = view;
+
+    const speedometerView = document.getElementById('speedometer-view');
+    const summaryView = document.getElementById('summary-view');
+    const garageView = document.getElementById('garage-view');
+
+    const btnSpeedometer = document.getElementById('btn-speedometer');
+    const btnSummary = document.getElementById('btn-summary');
+    const btnGarage = document.getElementById('btn-garage');
+
+    // Hide all views
+    speedometerView.style.display = 'none';
+    summaryView.style.display = 'none';
+    garageView.style.display = 'none';
+
+    // Remove active class from all buttons
+    btnSpeedometer.classList.remove('active');
+    btnSummary.classList.remove('active');
+    btnGarage.classList.remove('active');
+
+    // Show selected view and activate button
+    if (view === 'speedometer') {
+        speedometerView.style.display = 'block';
+        btnSpeedometer.classList.add('active');
+    } else if (view === 'summary') {
+        summaryView.style.display = 'block';
+        btnSummary.classList.add('active');
+    } else if (view === 'garage') {
+        garageView.style.display = 'block';
+        btnGarage.classList.add('active');
+    }
+}
+
+// ============================================================================
+// GARAGE FUNCTIONALITY
+// ============================================================================
+
+async function loadUserCars() {
+    if (!isAuthenticated) {
+        userCars = [];
+        activeCar = null;
+        return;
+    }
+
+    const result = await AuthService.apiRequest('/api/cars', { method: 'GET' });
+    if (result.success) {
+        userCars = result.data.cars || [];
+        activeCar = userCars.find(car => car.isActive) || null;
+        renderCarsList();
+    } else {
+        console.error('Failed to load cars:', result.error);
+    }
+}
+
+function renderCarsList() {
+    const carsGrid = document.getElementById('cars-grid');
+    const emptyGarage = document.getElementById('empty-garage');
+
+    if (userCars.length === 0) {
+        carsGrid.style.display = 'none';
+        emptyGarage.style.display = 'block';
+        return;
+    }
+
+    carsGrid.style.display = 'grid';
+    emptyGarage.style.display = 'none';
+
+    carsGrid.innerHTML = userCars.map(car => {
+        const isActive = car.isActive;
+        const photoUrl = car.photoUrl || 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIwIiBoZWlnaHQ9IjE4MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMzMzIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtc2l6ZT0iMjAiIGZpbGw9IiM2NjYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIj5ObyBQaG90bzwvdGV4dD48L3N2Zz4=';
+
+        return `
+            <div class="car-card ${isActive ? 'active-car' : ''}" data-car-id="${car.id}">
+                ${isActive ? '<div class="active-badge">ACTIVE</div>' : ''}
+                <img src="${photoUrl}" alt="${car.name}" class="car-photo" onerror="this.src='data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIwIiBoZWlnaHQ9IjE4MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMzMzIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtc2l6ZT0iMjAiIGZpbGw9IiM2NjYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIj5ObyBQaG90bzwvdGV4dD48L3N2Zz4='">
+                <div class="car-info">
+                    <h3>${car.name}</h3>
+                    <div class="car-details">
+                        <p><strong>${car.make} ${car.model}</strong></p>
+                        ${car.year ? `<p>Year: ${car.year}</p>` : ''}
+                        ${car.horsepower ? `<p>Power: ${car.horsepower} HP</p>` : ''}
+                    </div>
+                    <div class="car-stats">
+                        <h4>Best Times</h4>
+                        <p>Sessions: ${car.sessionCount || 0}</p>
+                        ${car.stats && car.stats.vMax ? `<p>V-Max: ${car.stats.vMax.toFixed(1)} km/h</p>` : ''}
+                        ${car.stats && car.stats.bestTimes && Object.keys(car.stats.bestTimes).length > 0
+                            ? Object.entries(car.stats.bestTimes).slice(0, 3).map(([key, time]) =>
+                                `<p>${key}: ${time.toFixed(2)}s</p>`
+                              ).join('')
+                            : '<p>No times recorded yet</p>'
+                        }
+                    </div>
+                    <div class="car-actions">
+                        ${!isActive ? `<button class="btn btn-set-active" onclick="setActiveCar(${car.id})">Set Active</button>` : ''}
+                        <button class="btn btn-edit" onclick="editCar(${car.id})">Edit</button>
+                        <button class="btn btn-delete" onclick="deleteCar(${car.id})">Delete</button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+async function setActiveCar(carId) {
+    const result = await AuthService.apiRequest(`/api/cars/${carId}/set-active`, {
+        method: 'PUT'
+    });
+
+    if (result.success) {
+        await loadUserCars(); // Reload to update UI
+    } else {
+        alert('Failed to set active car: ' + result.error);
+    }
+}
+
+async function addCar(carData) {
+    const result = await AuthService.apiRequest('/api/cars', {
+        method: 'POST',
+        body: JSON.stringify(carData)
+    });
+
+    if (result.success) {
+        await loadUserCars(); // Reload cars list
+        return { success: true };
+    } else {
+        return { success: false, error: result.error };
+    }
+}
+
+async function updateCar(carId, carData) {
+    const result = await AuthService.apiRequest(`/api/cars/${carId}`, {
+        method: 'PUT',
+        body: JSON.stringify(carData)
+    });
+
+    if (result.success) {
+        await loadUserCars(); // Reload cars list
+        return { success: true };
+    } else {
+        return { success: false, error: result.error };
+    }
+}
+
+async function deleteCar(carId) {
+    if (!confirm('Are you sure you want to delete this car? This will not delete your sessions.')) {
+        return;
+    }
+
+    const result = await AuthService.apiRequest(`/api/cars/${carId}`, {
+        method: 'DELETE'
+    });
+
+    if (result.success) {
+        await loadUserCars(); // Reload cars list
+    } else {
+        alert('Failed to delete car: ' + result.error);
+    }
+}
+
+function editCar(carId) {
+    const car = userCars.find(c => c.id === carId);
+    if (!car) return;
+
+    editingCarId = carId;
+
+    // Fill the form with car data
+    document.getElementById('car-name').value = car.name || '';
+    document.getElementById('car-make').value = car.make || '';
+    document.getElementById('car-model').value = car.model || '';
+    document.getElementById('car-year').value = car.year || '';
+    document.getElementById('car-horsepower').value = car.horsepower || '';
+    document.getElementById('car-photo-url').value = car.photoUrl || '';
+
+    // Update modal title
+    document.getElementById('car-modal-title').textContent = 'Edit Car';
+    document.getElementById('car-form-submit').textContent = 'Update Car';
+
+    // Show modal
+    document.getElementById('car-modal').style.display = 'flex';
+}
+
+function setupGarageEventListeners() {
+    const garageBtn = document.getElementById('btn-garage');
+    const addCarBtn = document.getElementById('btn-add-car');
+    const carModal = document.getElementById('car-modal');
+    const carModalClose = document.getElementById('car-modal-close');
+    const carForm = document.getElementById('car-form');
+    const carFormCancel = document.getElementById('car-form-cancel');
+    const carFormError = document.getElementById('car-form-error');
+
+    // Garage button - toggle to garage view
+    garageBtn.addEventListener('click', () => {
+        toggleView('garage');
+        loadUserCars(); // Reload cars when opening garage
+    });
+
+    // Add car button
+    addCarBtn.addEventListener('click', () => {
+        editingCarId = null;
+        document.getElementById('car-modal-title').textContent = 'Add Car';
+        document.getElementById('car-form-submit').textContent = 'Save Car';
+        carForm.reset();
+        carFormError.style.display = 'none';
+        carModal.style.display = 'flex';
+    });
+
+    // Close modal
+    carModalClose.addEventListener('click', () => {
+        carModal.style.display = 'none';
+        carForm.reset();
+        editingCarId = null;
+    });
+
+    carFormCancel.addEventListener('click', () => {
+        carModal.style.display = 'none';
+        carForm.reset();
+        editingCarId = null;
+    });
+
+    // Close modal on outside click
+    carModal.addEventListener('click', (e) => {
+        if (e.target === carModal) {
+            carModal.style.display = 'none';
+            carForm.reset();
+            editingCarId = null;
+        }
+    });
+
+    // Handle form submission
+    carForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const carData = {
+            name: document.getElementById('car-name').value,
+            make: document.getElementById('car-make').value,
+            model: document.getElementById('car-model').value,
+            year: document.getElementById('car-year').value || null,
+            horsepower: document.getElementById('car-horsepower').value || null,
+            photoUrl: document.getElementById('car-photo-url').value || null
+        };
+
+        const submitBtn = document.getElementById('car-form-submit');
+        submitBtn.disabled = true;
+        submitBtn.textContent = editingCarId ? 'Updating...' : 'Saving...';
+        carFormError.style.display = 'none';
+
+        let result;
+        if (editingCarId) {
+            result = await updateCar(editingCarId, carData);
+        } else {
+            result = await addCar(carData);
+        }
+
+        if (result.success) {
+            carModal.style.display = 'none';
+            carForm.reset();
+            editingCarId = null;
+        } else {
+            carFormError.textContent = result.error || 'Failed to save car';
+            carFormError.style.display = 'block';
+        }
+
+        submitBtn.disabled = false;
+        submitBtn.textContent = editingCarId ? 'Update Car' : 'Save Car';
+    });
+}
+
 async function init() {
+    // Check authentication status first
+    checkAuthStatus();
+    setupAuthEventListeners();
+    setupGarageEventListeners();
+
     await getCountryFromIP();
 
     // Set up button event listeners
