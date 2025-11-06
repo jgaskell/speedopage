@@ -17,7 +17,7 @@ app.use((req, res, next) => {
   // Referrer policy
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   // Content Security Policy - prevent inline scripts and external resources
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://ipapi.co https://nominatim.openstreetmap.org; img-src 'self' data:; font-src 'self';");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://ipapi.co https://nominatim.openstreetmap.org; img-src 'self' data: https:; font-src 'self';");
   // Remove server signature
   res.removeHeader('X-Powered-By');
   next();
@@ -91,6 +91,8 @@ db.serialize(() => {
   // Session summaries table for storing completed runs
   db.run(`CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userId INTEGER,
+    carId INTEGER,
     deviceId TEXT,
     startTime DATETIME,
     endTime DATETIME,
@@ -99,18 +101,50 @@ db.serialize(() => {
     duration INTEGER,
     timers TEXT,
     onIncline BOOLEAN DEFAULT 0,
-    timestamp DATETIME
+    timestamp DATETIME,
+    createdAt DATETIME,
+    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (carId) REFERENCES cars(id) ON DELETE SET NULL
   )`, (err) => {
     if (err) console.error('Error creating sessions table:', err);
 
-    // Add onIncline column if it doesn't exist (migration for existing databases)
+    // Add missing columns if they don't exist (migration for existing databases)
     db.all("PRAGMA table_info(sessions)", (err, rows) => {
       if (!err && rows) {
-        const hasOnIncline = rows.some(row => row.name === 'onIncline');
-        if (!hasOnIncline) {
+        const columnNames = rows.map(row => row.name);
+
+        if (!columnNames.includes('onIncline')) {
           db.run('ALTER TABLE sessions ADD COLUMN onIncline BOOLEAN DEFAULT 0', (err) => {
             if (err) console.error('Error adding onIncline column:', err);
             else console.log('Added onIncline column to sessions table');
+          });
+        }
+
+        if (!columnNames.includes('timestamp')) {
+          db.run('ALTER TABLE sessions ADD COLUMN timestamp DATETIME', (err) => {
+            if (err) console.error('Error adding timestamp column:', err);
+            else console.log('Added timestamp column to sessions table');
+          });
+        }
+
+        if (!columnNames.includes('userId')) {
+          db.run('ALTER TABLE sessions ADD COLUMN userId INTEGER', (err) => {
+            if (err) console.error('Error adding userId column:', err);
+            else console.log('Added userId column to sessions table');
+          });
+        }
+
+        if (!columnNames.includes('carId')) {
+          db.run('ALTER TABLE sessions ADD COLUMN carId INTEGER', (err) => {
+            if (err) console.error('Error adding carId column:', err);
+            else console.log('Added carId column to sessions table');
+          });
+        }
+
+        if (!columnNames.includes('createdAt')) {
+          db.run('ALTER TABLE sessions ADD COLUMN createdAt DATETIME', (err) => {
+            if (err) console.error('Error adding createdAt column:', err);
+            else console.log('Added createdAt column to sessions table');
           });
         }
       }

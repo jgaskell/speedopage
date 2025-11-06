@@ -1030,16 +1030,26 @@ async function checkAuthStatus() {
     currentUser = AuthService.getUser();
     hasChosenAuthOption = localStorage.getItem('hasChosenAuthOption') === 'true';
 
+    console.log('=== Auth Status Check ===');
+    console.log('isAuthenticated:', isAuthenticated);
+    console.log('currentUser:', currentUser);
+    console.log('hasChosenAuthOption:', hasChosenAuthOption);
+    console.log('localStorage hasChosenAuthOption:', localStorage.getItem('hasChosenAuthOption'));
+
     // If user appears authenticated, validate the token with server
     if (isAuthenticated && currentUser) {
         const validationResult = await AuthService.validateToken();
+        console.log('Token validation result:', validationResult);
         if (!validationResult) {
             // Token is invalid or expired, clear auth state
             isAuthenticated = false;
             currentUser = null;
             AuthService.removeToken();
             AuthService.removeUser();
-            // Don't reset hasChosenAuthOption - they may have chosen guest mode
+            // If token is invalid, user needs to make auth choice again
+            hasChosenAuthOption = false;
+            localStorage.removeItem('hasChosenAuthOption');
+            console.log('Cleared auth state due to invalid token');
         }
     }
 
@@ -1048,13 +1058,20 @@ async function checkAuthStatus() {
 
 function updateAuthUI() {
     const userInfo = document.getElementById('user-info');
+    const guestInfo = document.getElementById('guest-info');
     const authPrompt = document.getElementById('auth-prompt');
     const userName = document.getElementById('user-name');
     const garageBtn = document.getElementById('btn-garage');
 
+    console.log('=== Update Auth UI ===');
+    console.log('isAuthenticated:', isAuthenticated);
+    console.log('hasChosenAuthOption:', hasChosenAuthOption);
+
     if (isAuthenticated && currentUser) {
-        // Show user info, hide auth prompt
+        console.log('Showing user info (authenticated)');
+        // Show user info, hide others
         userInfo.style.display = 'block';
+        guestInfo.style.display = 'none';
         authPrompt.style.display = 'none';
         userName.textContent = `Welcome, ${currentUser.displayName || currentUser.email}`;
         garageBtn.style.display = 'inline-block'; // Show garage button
@@ -1062,13 +1079,17 @@ function updateAuthUI() {
         // Load user's cars
         loadUserCars();
     } else if (hasChosenAuthOption) {
-        // User chose to continue as guest, hide both
+        console.log('Showing guest info (guest mode)');
+        // User chose to continue as guest, show guest info with sign-in option
         userInfo.style.display = 'none';
+        guestInfo.style.display = 'block';
         authPrompt.style.display = 'none';
         garageBtn.style.display = 'none'; // Hide garage button
     } else {
+        console.log('Showing auth prompt (unauthenticated, no choice made)');
         // Show auth prompt
         userInfo.style.display = 'none';
+        guestInfo.style.display = 'none';
         authPrompt.style.display = 'block';
         garageBtn.style.display = 'none'; // Hide garage button
     }
@@ -1100,6 +1121,13 @@ function setupAuthEventListeners() {
     document.getElementById('btn-continue-guest').addEventListener('click', () => {
         hasChosenAuthOption = true;
         localStorage.setItem('hasChosenAuthOption', 'true');
+        updateAuthUI();
+    });
+
+    // Guest sign in - clear guest mode and show auth prompt
+    document.getElementById('btn-guest-signin').addEventListener('click', () => {
+        hasChosenAuthOption = false;
+        localStorage.removeItem('hasChosenAuthOption');
         updateAuthUI();
     });
 

@@ -739,7 +739,11 @@
                 <span id="user-name">Welcome, User</span>
                 <button id="btn-logout" class="btn" style="padding: 8px 20px; font-size: 0.9em; margin-left: 10px;">Logout</button>
             </div>
-            <div id="auth-prompt" style="display: none; margin-top: 15px;">
+            <div id="guest-info" style="display: none; margin-top: 15px;">
+                <span style="opacity: 0.7; margin-right: 10px;">Guest Mode</span>
+                <button id="btn-guest-signin" class="btn" style="padding: 8px 20px; font-size: 0.9em;">Sign In</button>
+            </div>
+            <div id="auth-prompt" style="display: block; margin-top: 15px;">
                 <p style="margin-bottom: 10px;">Sign in to save your sessions across devices</p>
                 <button id="btn-show-login" class="btn" style="padding: 10px 24px; margin-right: 10px;">Login</button>
                 <button id="btn-show-register" class="btn" style="padding: 10px 24px; margin-right: 10px;">Register</button>
@@ -833,7 +837,7 @@
     </div>
 
     <!-- Add/Edit Car Modal -->
-    <div id="car-modal" class="modal">
+    <div id="car-modal" class="modal" style="display: none;">
         <div class="modal-content">
             <span class="modal-close" id="car-modal-close">&times;</span>
             <h2 id="car-modal-title">Add Car</h2>
