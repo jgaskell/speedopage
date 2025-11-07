@@ -265,6 +265,19 @@ function watchPosition(position) {
         lastSpeed = speed; // Store for interpolation
         const calculatedSpeed = (dist / timeDiff) * 3600; // kmh
 
+        // GPS jitter filter: When at low speeds, require larger distance changes to register movement
+        // This prevents GPS accuracy errors from showing false movement at rest
+        // At rest (< 5 km/h), require at least 10m movement to avoid jitter
+        if (speed < 5 && calculatedSpeed < 10 && dist < 0.010) {
+            // Likely GPS jitter at rest - decay speed toward zero
+            speed = Math.max(0, speed * 0.5);
+            interpolatedSpeed = speed;
+            lastPosition = { lat, lon };
+            lastTime = now;
+            updateDisplay();
+            return;
+        }
+
         // Sanity check: ignore physically impossible speeds (> 500 km/h for ground vehicles)
         if (calculatedSpeed <= 500) {
             speed = calculatedSpeed;
