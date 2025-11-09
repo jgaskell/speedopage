@@ -6,16 +6,10 @@
 
 const express = require('express');
 const { body, validationResult } = require('express-validator');
-const { hashPassword, verifyPassword, validatePassword } = require('../middleware/password');
+const { hashPassword, verifyPassword, validatePassword} = require('../middleware/password');
 const { generateToken, requireAuth } = require('../middleware/auth');
+const { query } = require('../db/connection');
 const router = express.Router();
-
-// Database will be injected by server.js
-let db;
-
-function setDatabase(database) {
-  db = database;
-}
 
 /**
  * POST /api/auth/register
@@ -48,62 +42,48 @@ router.post('/register', [
 
   try {
     // Check if user already exists
-    db.get('SELECT id FROM users WHERE email = ?', [email], async (err, existingUser) => {
-      if (err) {
-        console.error('Database error checking for existing user:', err);
-        return res.status(500).json({ error: 'Database error' });
+    const existingUser = await query(
+      'SELECT id FROM users WHERE email = $1',
+      [email]
+    );
+
+    if (existingUser.rows.length > 0) {
+      return res.status(409).json({
+        error: 'User already exists',
+        code: 'USER_EXISTS'
+      });
+    }
+
+    // Hash password
+    const passwordHash = await hashPassword(password);
+
+    // Insert new user
+    const result = await query(
+      'INSERT INTO users (email, password_hash, display_name) VALUES ($1, $2, $3) RETURNING id, email, display_name',
+      [email, passwordHash, displayName || null]
+    );
+
+    const user = result.rows[0];
+
+    // Generate JWT token
+    const token = generateToken({
+      id: user.id,
+      email: user.email,
+      displayName: user.display_name
+    });
+
+    console.log(`New user registered: ${email} (ID: ${user.id})`);
+
+    res.status(201).json({
+      success: true,
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.display_name,
+        unitsPreference: 'auto',
+        isEmailVerified: false
       }
-
-      if (existingUser) {
-        return res.status(409).json({
-          error: 'User already exists',
-          code: 'USER_EXISTS'
-        });
-      }
-
-      // Hash password
-      let passwordHash;
-      try {
-        passwordHash = await hashPassword(password);
-      } catch (hashErr) {
-        console.error('Error hashing password:', hashErr);
-        return res.status(500).json({ error: 'Server error' });
-      }
-
-      // Insert new user
-      db.run(
-        'INSERT INTO users (email, passwordHash, displayName, createdAt) VALUES (?, ?, ?, ?)',
-        [email, passwordHash, displayName || null, new Date().toISOString()],
-        function(insertErr) {
-          if (insertErr) {
-            console.error('Error creating user:', insertErr);
-            return res.status(500).json({ error: 'Database error' });
-          }
-
-          const userId = this.lastID;
-
-          // Generate JWT token
-          const token = generateToken({
-            id: userId,
-            email,
-            displayName: displayName || null
-          });
-
-          console.log(`New user registered: ${email} (ID: ${userId})`);
-
-          res.status(201).json({
-            success: true,
-            token,
-            user: {
-              id: userId,
-              email,
-              displayName: displayName || null,
-              unitsPreference: 'auto',
-              isEmailVerified: false
-            }
-          });
-        }
-      );
     });
   } catch (error) {
     console.error('Registration error:', error);
@@ -132,75 +112,47 @@ router.post('/login', [
 
   try {
     // Find user by email
-    db.get('SELECT * FROM users WHERE email = ?', [email], async (err, user) => {
-      if (err) {
-        console.error('Database error during login:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
+    const result = await query(
+      'SELECT * FROM users WHERE email = $1',
+      [email]
+    );
 
-      if (!user) {
-        return res.status(401).json({
-          error: 'Invalid email or password',
-          code: 'INVALID_CREDENTIALS'
-        });
-      }
+    if (result.rows.length === 0) {
+      return res.status(401).json({
+        error: 'Invalid email or password',
+        code: 'INVALID_CREDENTIALS'
+      });
+    }
 
-      // Check if account is suspended
-      if (user.accountStatus !== 'active') {
-        return res.status(403).json({
-          error: 'Account is not active',
-          code: 'ACCOUNT_SUSPENDED'
-        });
-      }
+    const user = result.rows[0];
 
-      // Verify password
-      let passwordValid;
-      try {
-        passwordValid = await verifyPassword(password, user.passwordHash);
-      } catch (verifyErr) {
-        console.error('Error verifying password:', verifyErr);
-        return res.status(500).json({ error: 'Server error' });
-      }
+    // Verify password
+    const passwordValid = await verifyPassword(password, user.password_hash);
 
-      if (!passwordValid) {
-        return res.status(401).json({
-          error: 'Invalid email or password',
-          code: 'INVALID_CREDENTIALS'
-        });
-      }
+    if (!passwordValid) {
+      return res.status(401).json({
+        error: 'Invalid email or password',
+        code: 'INVALID_CREDENTIALS'
+      });
+    }
 
-      // Update last login time
-      db.run('UPDATE users SET lastLoginAt = ? WHERE id = ?',
-        [new Date().toISOString(), user.id],
-        (updateErr) => {
-          if (updateErr) {
-            console.error('Error updating last login:', updateErr);
-          }
-        }
-      );
+    // Generate JWT token
+    const token = generateToken({
+      id: user.id,
+      email: user.email,
+      displayName: user.display_name
+    });
 
-      // Generate JWT token
-      const token = generateToken({
+    console.log(`User logged in: ${email} (ID: ${user.id})`);
+
+    res.json({
+      success: true,
+      token,
+      user: {
         id: user.id,
         email: user.email,
-        displayName: user.displayName
-      });
-
-      console.log(`User logged in: ${email} (ID: ${user.id})`);
-
-      res.json({
-        success: true,
-        token,
-        user: {
-          id: user.id,
-          email: user.email,
-          displayName: user.displayName,
-          unitsPreference: user.unitsPreference,
-          isEmailVerified: user.isEmailVerified,
-          isPublicProfile: user.isPublicProfile,
-          avatarUrl: user.avatarUrl
-        }
-      });
+        displayName: user.display_name
+      }
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -212,24 +164,33 @@ router.post('/login', [
  * GET /api/auth/me
  * Get current user info (requires authentication)
  */
-router.get('/me', requireAuth, (req, res) => {
+router.get('/me', requireAuth, async (req, res) => {
   const userId = req.user.userId;
 
-  db.get('SELECT id, email, displayName, unitsPreference, isEmailVerified, isPublicProfile, avatarUrl, createdAt, lastLoginAt FROM users WHERE id = ?',
-    [userId],
-    (err, user) => {
-      if (err) {
-        console.error('Error fetching user:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
+  try {
+    const result = await query(
+      'SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = $1',
+      [userId]
+    );
 
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-
-      res.json({ user });
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
     }
-  );
+
+    const user = result.rows[0];
+    res.json({
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.display_name,
+        createdAt: user.created_at,
+        updatedAt: user.updated_at
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching user:', error);
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 /**
@@ -249,38 +210,39 @@ router.post('/logout', (req, res) => {
  * POST /api/auth/refresh
  * Refresh JWT token (requires valid token)
  */
-router.post('/refresh', requireAuth, (req, res) => {
+router.post('/refresh', requireAuth, async (req, res) => {
   const userId = req.user.userId;
 
-  // Fetch fresh user data
-  db.get('SELECT id, email, displayName FROM users WHERE id = ? AND accountStatus = ?',
-    [userId, 'active'],
-    (err, user) => {
-      if (err) {
-        console.error('Error refreshing token:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
+  try {
+    // Fetch fresh user data
+    const result = await query(
+      'SELECT id, email, display_name FROM users WHERE id = $1',
+      [userId]
+    );
 
-      if (!user) {
-        return res.status(401).json({ error: 'User not found or inactive' });
-      }
-
-      // Generate new token
-      const token = generateToken({
-        id: user.id,
-        email: user.email,
-        displayName: user.displayName
-      });
-
-      res.json({
-        success: true,
-        token
-      });
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'User not found or inactive' });
     }
-  );
+
+    const user = result.rows[0];
+
+    // Generate new token
+    const token = generateToken({
+      id: user.id,
+      email: user.email,
+      displayName: user.display_name
+    });
+
+    res.json({
+      success: true,
+      token
+    });
+  } catch (error) {
+    console.error('Error refreshing token:', error);
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 module.exports = {
-  router,
-  setDatabase
+  router
 };
