@@ -1,8 +1,6 @@
 const express = require('express');
-const https = require('https');
 const http = require('http');
-const fs = require('fs');
-const sqlite3 = require('sqlite3').verbose();
+const { query, initRedis, getRedis, isRedisConnected, closeConnections } = require('./db/connection');
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -78,117 +76,57 @@ setInterval(() => {
   }
 }, 300000);
 
-// Database setup
-const db = new sqlite3.Database('speeds.db');
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS speeds (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    deviceId TEXT,
-    speed REAL,
-    timestamp DATETIME
-  )`);
-
-  // Session summaries table for storing completed runs
-  db.run(`CREATE TABLE IF NOT EXISTS sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    userId INTEGER,
-    carId INTEGER,
-    deviceId TEXT,
-    startTime DATETIME,
-    endTime DATETIME,
-    vMax REAL,
-    distance REAL,
-    duration INTEGER,
-    timers TEXT,
-    onIncline BOOLEAN DEFAULT 0,
-    timestamp DATETIME,
-    createdAt DATETIME,
-    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (carId) REFERENCES cars(id) ON DELETE SET NULL
-  )`, (err) => {
-    if (err) console.error('Error creating sessions table:', err);
-
-    // Add missing columns if they don't exist (migration for existing databases)
-    db.all("PRAGMA table_info(sessions)", (err, rows) => {
-      if (!err && rows) {
-        const columnNames = rows.map(row => row.name);
-
-        if (!columnNames.includes('onIncline')) {
-          db.run('ALTER TABLE sessions ADD COLUMN onIncline BOOLEAN DEFAULT 0', (err) => {
-            if (err) console.error('Error adding onIncline column:', err);
-            else console.log('Added onIncline column to sessions table');
-          });
-        }
-
-        if (!columnNames.includes('timestamp')) {
-          db.run('ALTER TABLE sessions ADD COLUMN timestamp DATETIME', (err) => {
-            if (err) console.error('Error adding timestamp column:', err);
-            else console.log('Added timestamp column to sessions table');
-          });
-        }
-
-        if (!columnNames.includes('userId')) {
-          db.run('ALTER TABLE sessions ADD COLUMN userId INTEGER', (err) => {
-            if (err) console.error('Error adding userId column:', err);
-            else console.log('Added userId column to sessions table');
-          });
-        }
-
-        if (!columnNames.includes('carId')) {
-          db.run('ALTER TABLE sessions ADD COLUMN carId INTEGER', (err) => {
-            if (err) console.error('Error adding carId column:', err);
-            else console.log('Added carId column to sessions table');
-          });
-        }
-
-        if (!columnNames.includes('createdAt')) {
-          db.run('ALTER TABLE sessions ADD COLUMN createdAt DATETIME', (err) => {
-            if (err) console.error('Error adding createdAt column:', err);
-            else console.log('Added createdAt column to sessions table');
-          });
-        }
-      }
-    });
-  });
+// Initialize Redis connection
+let redis;
+initRedis().then(client => {
+  redis = client;
+  if (redis) {
+    console.log('✓ Redis initialized and connected');
+  } else {
+    console.warn('⚠ Redis not available - running without cache');
+  }
+}).catch(err => {
+  console.error('Redis initialization error:', err);
 });
 
 // Authentication routes
 const authRoutes = require('./routes/auth');
-authRoutes.setDatabase(db);
 app.use('/api/auth', authRoutes.router);
 
 // Car management routes
 const carRoutes = require('./routes/cars');
-carRoutes.setDatabase(db);
 app.use('/api/cars', carRoutes.router);
 
 // User profile routes
 const userRoutes = require('./routes/users');
-userRoutes.setDatabase(db);
 app.use('/api/users', userRoutes.router);
 
 app.get('/', (req, res) => {
   res.sendFile(__dirname + '/public/index.html');
 });
 
-app.post('/api/log-speed', rateLimit, (req, res) => {
+app.post('/api/log-speed', rateLimit, async (req, res) => {
   const { deviceId, speed, timestamp } = req.body;
   if (!deviceId || speed == null) {
     return res.status(400).json({ error: 'Invalid data' });
   }
-  db.run('INSERT INTO speeds (deviceId, speed, timestamp) VALUES (?, ?, ?)', [deviceId, speed, timestamp], function(err) {
-    if (err) {
-      console.error(err);
-      return res.status(500).json({ error: 'Database error' });
-    }
-    res.json({ success: true, id: this.lastID });
-  });
+
+  try {
+    const result = await query(
+      'INSERT INTO speeds (device_id, speed, timestamp) VALUES ($1, $2, $3) RETURNING id',
+      [deviceId, speed, timestamp]
+    );
+    res.json({ success: true, id: result.rows[0].id });
+  } catch (err) {
+    console.error('Error logging speed:', err);
+    return res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // Save session summary (supports both authenticated users and anonymous)
 const { optionalAuth } = require('./middleware/auth');
 
-app.post('/api/save-session', rateLimit, optionalAuth, (req, res) => {
+app.post('/api/save-session', rateLimit, optionalAuth, async (req, res) => {
   const { deviceId, carId, startTime, endTime, vMax, distance, duration, timers, onIncline } = req.body;
   const userId = req.user ? req.user.userId : null;
 
@@ -208,7 +146,7 @@ app.post('/api/save-session', rateLimit, optionalAuth, (req, res) => {
     return res.status(400).json({ error: 'deviceId is required for anonymous users' });
   }
 
-  // Safely stringify timers
+  // Safely stringify timers (use JSONB in Postgres)
   let timersJSON;
   try {
     timersJSON = JSON.stringify(timers || {});
@@ -217,47 +155,44 @@ app.post('/api/save-session', rateLimit, optionalAuth, (req, res) => {
     return res.status(400).json({ error: 'Invalid timers format' });
   }
 
-  const inclineFlag = onIncline ? 1 : 0;
+  const inclineFlag = onIncline ? true : false;
 
-  // Insert session with userId and carId (if authenticated) or deviceId (if anonymous)
-  const query = `INSERT INTO sessions (
-    userId, carId, deviceId, startTime, endTime, vMax, distance, duration,
-    timers, onIncline, createdAt
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-
-  const params = [
-    userId,
-    carId || null,
-    deviceId || null,
-    startTime,
-    endTime,
-    vMax,
-    distance,
-    duration,
-    timersJSON,
-    inclineFlag,
-    new Date().toISOString()
-  ];
-
-  db.run(query, params, function(err) {
-    if (err) {
-      console.error('Database insert error:', err);
-      console.error('Query:', query);
-      console.error('Params:', params);
-      return res.status(500).json({ error: 'Database error', details: err.message });
-    }
+  try {
+    // Insert session with userId and carId (if authenticated) or deviceId (if anonymous)
+    const result = await query(
+      `INSERT INTO sessions (
+        user_id, car_id, device_id, start_time, end_time, v_max, distance, duration,
+        timers, on_incline, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+      [
+        userId,
+        carId || null,
+        deviceId || null,
+        startTime,
+        endTime,
+        vMax,
+        distance,
+        duration,
+        timersJSON,
+        inclineFlag,
+        new Date().toISOString()
+      ]
+    );
 
     const logInfo = userId
       ? `userId ${userId}, carId ${carId}`
       : `deviceId ${deviceId}`;
 
-    console.log(`Session saved: ID ${this.lastID}, ${logInfo}, vMax ${vMax}`);
-    res.json({ success: true, id: this.lastID });
-  });
+    console.log(`Session saved: ID ${result.rows[0].id}, ${logInfo}, vMax ${vMax}`);
+    res.json({ success: true, id: result.rows[0].id });
+  } catch (err) {
+    console.error('Database insert error:', err);
+    return res.status(500).json({ error: 'Database error', details: err.message });
+  }
 });
 
 // Get session history for a device
-app.get('/api/sessions/:deviceId', rateLimit, (req, res) => {
+app.get('/api/sessions/:deviceId', rateLimit, async (req, res) => {
   const { deviceId } = req.params;
 
   // Validate deviceId format (UUID)
@@ -266,37 +201,38 @@ app.get('/api/sessions/:deviceId', rateLimit, (req, res) => {
     return res.status(400).json({ error: 'Invalid device ID format' });
   }
 
-  db.all(
-    'SELECT * FROM sessions WHERE deviceId = ? ORDER BY timestamp DESC LIMIT 50',
-    [deviceId],
-    (err, rows) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Database error' });
-      }
-      // BUG FIX #2: Safe JSON parsing with error handling
-      const sessions = rows.map(row => {
-        let timers = {};
-        if (row.timers) {
-          try {
-            timers = JSON.parse(row.timers);
-          } catch (parseErr) {
-            console.error('Failed to parse timers JSON for session', row.id, parseErr);
-            timers = {}; // Use empty object if parse fails
-          }
-        }
-        return {
-          ...row,
-          timers
-        };
-      });
-      res.json({ sessions });
-    }
-  );
+  try {
+    const result = await query(
+      'SELECT * FROM sessions WHERE device_id = $1 ORDER BY timestamp DESC LIMIT 50',
+      [deviceId]
+    );
+
+    // JSONB columns are automatically parsed by pg driver
+    const sessions = result.rows.map(row => ({
+      id: row.id,
+      userId: row.user_id,
+      carId: row.car_id,
+      deviceId: row.device_id,
+      startTime: row.start_time,
+      endTime: row.end_time,
+      vMax: row.v_max,
+      distance: row.distance,
+      duration: row.duration,
+      timers: row.timers || {},
+      onIncline: row.on_incline,
+      timestamp: row.timestamp,
+      createdAt: row.created_at
+    }));
+
+    res.json({ sessions });
+  } catch (err) {
+    console.error('Error fetching sessions:', err);
+    return res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // Get ALL sessions (user's own + sample data) for display purposes
-app.get('/api/sessions/:deviceId/all', rateLimit, (req, res) => {
+app.get('/api/sessions/:deviceId/all', rateLimit, async (req, res) => {
   const { deviceId } = req.params;
 
   // Validate deviceId format (UUID or SAMPLE-)
@@ -307,53 +243,51 @@ app.get('/api/sessions/:deviceId/all', rateLimit, (req, res) => {
     return res.status(400).json({ error: 'Invalid device ID format' });
   }
 
-  // Get both user's sessions AND sample data, sorted by timestamp
-  db.all(
-    "SELECT * FROM sessions WHERE deviceId = ? OR deviceId LIKE 'SAMPLE-%' ORDER BY timestamp DESC LIMIT 50",
-    [deviceId],
-    (err, rows) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Database error' });
-      }
-      // Safe JSON parsing with error handling
-      const sessions = rows.map(row => {
-        let timers = {};
-        if (row.timers) {
-          try {
-            timers = JSON.parse(row.timers);
-          } catch (parseErr) {
-            console.error('Failed to parse timers JSON for session', row.id, parseErr);
-            timers = {};
-          }
-        }
-        return {
-          ...row,
-          timers
-        };
-      });
-      res.json({ sessions });
-    }
-  );
+  try {
+    // Get both user's sessions AND sample data, sorted by timestamp
+    const result = await query(
+      "SELECT * FROM sessions WHERE device_id = $1 OR device_id LIKE 'SAMPLE-%' ORDER BY timestamp DESC LIMIT 50",
+      [deviceId]
+    );
+
+    // JSONB columns are automatically parsed by pg driver
+    const sessions = result.rows.map(row => ({
+      id: row.id,
+      userId: row.user_id,
+      carId: row.car_id,
+      deviceId: row.device_id,
+      startTime: row.start_time,
+      endTime: row.end_time,
+      vMax: row.v_max,
+      distance: row.distance,
+      duration: row.duration,
+      timers: row.timers || {},
+      onIncline: row.on_incline,
+      timestamp: row.timestamp,
+      createdAt: row.created_at
+    }));
+
+    res.json({ sessions });
+  } catch (err) {
+    console.error('Error fetching all sessions:', err);
+    return res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // Delete sample data (deviceId starts with "SAMPLE-")
-app.delete('/api/sessions/sample', rateLimit, (req, res) => {
-  db.run(
-    "DELETE FROM sessions WHERE deviceId LIKE 'SAMPLE-%'",
-    function(err) {
-      if (err) {
-        console.error('Error deleting sample data:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
-      console.log(`Deleted ${this.changes} sample sessions`);
-      res.json({ success: true, deleted: this.changes });
-    }
-  );
+app.delete('/api/sessions/sample', rateLimit, async (req, res) => {
+  try {
+    const result = await query("DELETE FROM sessions WHERE device_id LIKE 'SAMPLE-%'");
+    console.log(`Deleted ${result.rowCount} sample sessions`);
+    res.json({ success: true, deleted: result.rowCount });
+  } catch (err) {
+    console.error('Error deleting sample data:', err);
+    return res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // Delete user's own data (specific deviceId)
-app.delete('/api/sessions/:deviceId/user', rateLimit, (req, res) => {
+app.delete('/api/sessions/:deviceId/user', rateLimit, async (req, res) => {
   const { deviceId } = req.params;
 
   // Validate UUID format
@@ -367,22 +301,18 @@ app.delete('/api/sessions/:deviceId/user', rateLimit, (req, res) => {
     return res.status(400).json({ error: 'Use /api/sessions/sample to delete sample data' });
   }
 
-  db.run(
-    'DELETE FROM sessions WHERE deviceId = ?',
-    [deviceId],
-    function(err) {
-      if (err) {
-        console.error('Error deleting user data:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
-      console.log(`Deleted ${this.changes} sessions for device ${deviceId}`);
-      res.json({ success: true, deleted: this.changes });
-    }
-  );
+  try {
+    const result = await query('DELETE FROM sessions WHERE device_id = $1', [deviceId]);
+    console.log(`Deleted ${result.rowCount} sessions for device ${deviceId}`);
+    res.json({ success: true, deleted: result.rowCount });
+  } catch (err) {
+    console.error('Error deleting user data:', err);
+    return res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // Delete ALL session data (requires confirmation token)
-app.delete('/api/sessions/all/:confirmToken', rateLimit, (req, res) => {
+app.delete('/api/sessions/all/:confirmToken', rateLimit, async (req, res) => {
   const { confirmToken } = req.params;
 
   // Require specific confirmation token to prevent accidental deletion
@@ -390,14 +320,14 @@ app.delete('/api/sessions/all/:confirmToken', rateLimit, (req, res) => {
     return res.status(400).json({ error: 'Invalid confirmation token' });
   }
 
-  db.run('DELETE FROM sessions', function(err) {
-    if (err) {
-      console.error('Error deleting all data:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
-    console.log(`⚠️ Deleted ALL ${this.changes} sessions from database`);
-    res.json({ success: true, deleted: this.changes });
-  });
+  try {
+    const result = await query('DELETE FROM sessions');
+    console.log(`⚠️ Deleted ALL ${result.rowCount} sessions from database`);
+    res.json({ success: true, deleted: result.rowCount });
+  } catch (err) {
+    console.error('Error deleting all data:', err);
+    return res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // Catch-all route to prevent enumeration of files/directories
@@ -405,23 +335,11 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
-// HTTPS Configuration
-let server;
-try {
-  const httpsOptions = {
-    key: fs.readFileSync('./key.pem'),
-    cert: fs.readFileSync('./cert.pem')
-  };
-
-  server = https.createServer(httpsOptions, app);
-  console.log('HTTPS enabled with SSL certificates');
-} catch (err) {
-  console.warn('SSL certificates not found or invalid, falling back to HTTP');
-  console.warn('Error:', err.message);
-  server = http.createServer(app);
-}
+// HTTP server (HTTPS handled by Nginx reverse proxy)
+const server = http.createServer(app);
 
 server.listen(port, () => {
-  const protocol = server instanceof https.Server ? 'HTTPS' : 'HTTP';
-  console.log(`SpeedoPage running on ${protocol} port ${port}`);
+  console.log(`SpeedoPage running on HTTP port ${port} (HTTPS handled by Nginx)`);
+  console.log(`PostgreSQL connection pool active`);
+  console.log(`Redis cache: ${isRedisConnected() ? 'Connected' : 'Not available'}`);
 });

@@ -8,20 +8,14 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { requireAuth } = require('../middleware/auth');
 const { hashPassword, verifyPassword, validatePassword } = require('../middleware/password');
+const { query } = require('../db/connection');
 const router = express.Router();
-
-// Database will be injected by server.js
-let db;
-
-function setDatabase(database) {
-  db = database;
-}
 
 /**
  * GET /api/users/:userId/profile
  * Get user profile (public or own)
  */
-router.get('/:userId/profile', (req, res) => {
+router.get('/:userId/profile', async (req, res) => {
   const requestedUserId = parseInt(req.params.userId);
   const isOwnProfile = req.user && req.user.userId === requestedUserId;
 
@@ -29,35 +23,36 @@ router.get('/:userId/profile', (req, res) => {
     return res.status(400).json({ error: 'Invalid user ID' });
   }
 
-  // Determine which fields to return based on privacy settings
-  const fields = isOwnProfile
-    ? 'id, email, displayName, avatarUrl, unitsPreference, isEmailVerified, isPublicProfile, createdAt, lastLoginAt'
-    : 'id, displayName, avatarUrl, isPublicProfile, createdAt';
+  try {
+    // Determine which fields to return based on privacy settings
+    const fields = isOwnProfile
+      ? 'id, email, display_name, created_at, updated_at'
+      : 'id, display_name, created_at';
 
-  db.get(
-    `SELECT ${fields} FROM users WHERE id = ?`,
-    [requestedUserId],
-    (err, user) => {
-      if (err) {
-        console.error('Error fetching user profile:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
+    const result = await query(
+      `SELECT ${fields} FROM users WHERE id = $1`,
+      [requestedUserId]
+    );
 
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-
-      // Check if profile is public or if it's own profile
-      if (!isOwnProfile && !user.isPublicProfile) {
-        return res.status(403).json({
-          error: 'Profile is private',
-          code: 'PRIVATE_PROFILE'
-        });
-      }
-
-      res.json({ user });
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
     }
-  );
+
+    const user = result.rows[0];
+
+    res.json({
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.display_name,
+        createdAt: user.created_at,
+        updatedAt: user.updated_at
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching user profile:', err);
+    return res.status(500).json({ error: 'Database error' });
+  }
 });
 
 /**
@@ -65,11 +60,8 @@ router.get('/:userId/profile', (req, res) => {
  * Update user profile (requires auth and ownership)
  */
 router.put('/:userId/profile', requireAuth, [
-  body('displayName').optional().trim().isLength({ min: 1, max: 50 }),
-  body('avatarUrl').optional().isURL(),
-  body('unitsPreference').optional().isIn(['auto', 'kmh', 'mph']),
-  body('isPublicProfile').optional().isBoolean()
-], (req, res) => {
+  body('displayName').optional().trim().isLength({ min: 1, max: 50 })
+], async (req, res) => {
   // Validate input
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -94,51 +86,49 @@ router.put('/:userId/profile', requireAuth, [
     });
   }
 
-  // Build update query dynamically
-  const updates = [];
-  const values = [];
-  const allowedFields = ['displayName', 'avatarUrl', 'unitsPreference', 'isPublicProfile'];
+  try {
+    // Build update query dynamically
+    const updates = [];
+    const values = [];
+    let paramCount = 1;
+    const allowedFields = ['displayName'];
 
-  allowedFields.forEach(field => {
-    if (req.body.hasOwnProperty(field)) {
-      updates.push(`${field} = ?`);
-      values.push(req.body[field]);
-    }
-  });
-
-  if (updates.length === 0) {
-    return res.status(400).json({ error: 'No fields to update' });
-  }
-
-  values.push(userId);
-
-  const query = `UPDATE users SET ${updates.join(', ')} WHERE id = ?`;
-
-  db.run(query, values, function(err) {
-    if (err) {
-      console.error('Error updating profile:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
-
-    // Fetch updated profile
-    db.get(
-      'SELECT id, email, displayName, avatarUrl, unitsPreference, isEmailVerified, isPublicProfile, createdAt, lastLoginAt FROM users WHERE id = ?',
-      [userId],
-      (err, user) => {
-        if (err) {
-          console.error('Error fetching updated profile:', err);
-          return res.status(500).json({ error: 'Database error' });
-        }
-
-        console.log(`Profile updated for user ${userId}`);
-
-        res.json({
-          success: true,
-          user
-        });
+    allowedFields.forEach(field => {
+      if (req.body.hasOwnProperty(field)) {
+        const dbField = field === 'displayName' ? 'display_name' : field;
+        updates.push(`${dbField} = $${paramCount}`);
+        values.push(req.body[field]);
+        paramCount++;
       }
-    );
-  });
+    });
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    values.push(userId);
+
+    const updateQuery = `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING id, email, display_name, created_at, updated_at`;
+
+    const result = await query(updateQuery, values);
+    const user = result.rows[0];
+
+    console.log(`Profile updated for user ${userId}`);
+
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.display_name,
+        createdAt: user.created_at,
+        updatedAt: user.updated_at
+      }
+    });
+  } catch (err) {
+    console.error('Error updating profile:', err);
+    return res.status(500).json({ error: 'Database error' });
+  }
 });
 
 /**
@@ -183,25 +173,21 @@ router.put('/:userId/password', requireAuth, [
     });
   }
 
-  // Fetch user with current password hash
-  db.get('SELECT id, passwordHash FROM users WHERE id = ?', [userId], async (err, user) => {
-    if (err) {
-      console.error('Error fetching user:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
+  try {
+    // Fetch user with current password hash
+    const result = await query(
+      'SELECT id, password_hash FROM users WHERE id = $1',
+      [userId]
+    );
 
-    if (!user) {
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    const user = result.rows[0];
+
     // Verify current password
-    let passwordValid;
-    try {
-      passwordValid = await verifyPassword(currentPassword, user.passwordHash);
-    } catch (verifyErr) {
-      console.error('Error verifying password:', verifyErr);
-      return res.status(500).json({ error: 'Server error' });
-    }
+    const passwordValid = await verifyPassword(currentPassword, user.password_hash);
 
     if (!passwordValid) {
       return res.status(401).json({
@@ -211,29 +197,21 @@ router.put('/:userId/password', requireAuth, [
     }
 
     // Hash new password
-    let newPasswordHash;
-    try {
-      newPasswordHash = await hashPassword(newPassword);
-    } catch (hashErr) {
-      console.error('Error hashing password:', hashErr);
-      return res.status(500).json({ error: 'Server error' });
-    }
+    const newPasswordHash = await hashPassword(newPassword);
 
     // Update password
-    db.run('UPDATE users SET passwordHash = ? WHERE id = ?', [newPasswordHash, userId], (err) => {
-      if (err) {
-        console.error('Error updating password:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
+    await query('UPDATE users SET password_hash = $1 WHERE id = $2', [newPasswordHash, userId]);
 
-      console.log(`Password updated for user ${userId}`);
+    console.log(`Password updated for user ${userId}`);
 
-      res.json({
-        success: true,
-        message: 'Password updated successfully'
-      });
+    res.json({
+      success: true,
+      message: 'Password updated successfully'
     });
-  });
+  } catch (err) {
+    console.error('Error updating password:', err);
+    return res.status(500).json({ error: 'Database error' });
+  }
 });
 
 /**
@@ -269,25 +247,21 @@ router.delete('/:userId/account', requireAuth, [
     });
   }
 
-  // Fetch user with password hash
-  db.get('SELECT id, email, passwordHash FROM users WHERE id = ?', [userId], async (err, user) => {
-    if (err) {
-      console.error('Error fetching user:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
+  try {
+    // Fetch user with password hash
+    const result = await query(
+      'SELECT id, email, password_hash FROM users WHERE id = $1',
+      [userId]
+    );
 
-    if (!user) {
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    const user = result.rows[0];
+
     // Verify password
-    let passwordValid;
-    try {
-      passwordValid = await verifyPassword(password, user.passwordHash);
-    } catch (verifyErr) {
-      console.error('Error verifying password:', verifyErr);
-      return res.status(500).json({ error: 'Server error' });
-    }
+    const passwordValid = await verifyPassword(password, user.password_hash);
 
     if (!passwordValid) {
       return res.status(401).json({
@@ -297,27 +271,25 @@ router.delete('/:userId/account', requireAuth, [
     }
 
     // Delete user account (CASCADE will delete cars, sessions, etc.)
-    db.run('DELETE FROM users WHERE id = ?', [userId], (err) => {
-      if (err) {
-        console.error('Error deleting account:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
+    await query('DELETE FROM users WHERE id = $1', [userId]);
 
-      console.log(`Account deleted: ${user.email} (ID: ${userId})`);
+    console.log(`Account deleted: ${user.email} (ID: ${userId})`);
 
-      res.json({
-        success: true,
-        message: 'Account deleted successfully'
-      });
+    res.json({
+      success: true,
+      message: 'Account deleted successfully'
     });
-  });
+  } catch (err) {
+    console.error('Error deleting account:', err);
+    return res.status(500).json({ error: 'Database error' });
+  }
 });
 
 /**
  * GET /api/users/:userId/stats
  * Get user statistics (total sessions, distance, etc.)
  */
-router.get('/:userId/stats', requireAuth, (req, res) => {
+router.get('/:userId/stats', requireAuth, async (req, res) => {
   const userId = parseInt(req.params.userId);
   const requesterId = req.user.userId;
 
@@ -333,46 +305,44 @@ router.get('/:userId/stats', requireAuth, (req, res) => {
     });
   }
 
-  // Get overall statistics
-  db.get(
-    `SELECT
-      COUNT(*) as totalSessions,
-      MAX(vMax) as topSpeed,
-      SUM(distance) as totalDistance,
-      SUM(duration) as totalDuration,
-      AVG(vMax) as avgMaxSpeed
-    FROM sessions
-    WHERE userId = ?`,
-    [userId],
-    (err, stats) => {
-      if (err) {
-        console.error('Error fetching user stats:', err);
-        return res.status(500).json({ error: 'Database error' });
+  try {
+    // Get overall statistics
+    const statsResult = await query(
+      `SELECT
+        COUNT(*) as total_sessions,
+        MAX(v_max) as top_speed,
+        SUM(distance) as total_distance,
+        SUM(duration) as total_duration,
+        AVG(v_max) as avg_max_speed
+      FROM sessions
+      WHERE user_id = $1`,
+      [userId]
+    );
+
+    const stats = statsResult.rows[0];
+
+    // Get car count
+    const carResult = await query(
+      'SELECT COUNT(*) as car_count FROM cars WHERE user_id = $1',
+      [userId]
+    );
+
+    res.json({
+      stats: {
+        totalSessions: parseInt(stats.total_sessions) || 0,
+        topSpeed: parseFloat(stats.top_speed) || 0,
+        totalDistance: parseFloat(stats.total_distance) || 0,
+        totalDuration: parseInt(stats.total_duration) || 0,
+        avgMaxSpeed: parseFloat(stats.avg_max_speed) || 0,
+        carCount: parseInt(carResult.rows[0].car_count) || 0
       }
-
-      // Get car count
-      db.get('SELECT COUNT(*) as carCount FROM cars WHERE userId = ?', [userId], (err, carResult) => {
-        if (err) {
-          console.error('Error fetching car count:', err);
-          return res.status(500).json({ error: 'Database error' });
-        }
-
-        res.json({
-          stats: {
-            totalSessions: stats.totalSessions || 0,
-            topSpeed: stats.topSpeed || 0,
-            totalDistance: stats.totalDistance || 0,
-            totalDuration: stats.totalDuration || 0,
-            avgMaxSpeed: stats.avgMaxSpeed || 0,
-            carCount: carResult.carCount || 0
-          }
-        });
-      });
-    }
-  );
+    });
+  } catch (err) {
+    console.error('Error fetching user stats:', err);
+    return res.status(500).json({ error: 'Database error' });
+  }
 });
 
 module.exports = {
-  router,
-  setDatabase
+  router
 };
